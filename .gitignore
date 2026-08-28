@@ -1,0 +1,25 @@
+.DS_Store
+.build/
+.swiftpm/
+
+# Local research copies and live-session captures
+work/reference-stats/
+work/codex-quota-request.jsonl
+
+# Nutstore conflict copies
+*-NSConflict-*
+
+# Local release artifacts
+outputs/*.app/
+outputs/*.zip
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.mobileprovision
+*.secrets
+*.credentials
