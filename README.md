@@ -61,6 +61,15 @@ Intel Mac 和旧版 macOS 目前未纳入构建与测试范围。
 4. 如果系统仍阻止运行，前往“系统设置 → 隐私与安全性”，确认应用来源后选择“仍要打开”。
 5. 如果需要番茄钟、下班或热风险提醒，请允许通知权限。
 
+如果你已确认 ZIP 来自本项目的 GitHub Release，但 Gatekeeper 仍组织运行，可在“终端”执行以移除该 App 的下载隔离标记：
+
+```sh
+xattr -dr com.apple.quarantine /Applications/PulseDock.app
+open /Applications/PulseDock.app
+```
+
+这仅适用于你信任的发布包，不要对来源不明的 App 执行。这是未公证安装包的临时处理方案；正式发布版仍应使用 Developer ID 签名与 Apple 公证。
+
 升级时请先通过浮窗右键菜单或菜单栏完全退出旧版，再替换 `PulseDock.app`。关闭浮窗不等于退出应用。
 
 ### 从源码构建

@@ -59,6 +59,15 @@ Intel Macs and older macOS releases are not currently built or tested.
 4. If macOS still blocks it, open **System Settings → Privacy & Security** and choose **Open Anyway** after verifying the source.
 5. Allow notifications if you want timer, work-status, or thermal-risk reminders.
 
+If you have verified that the ZIP came from this project's GitHub Release but Gatekeeper still blocks it, run the following in Terminal to remove the download quarantine attribute from this app:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/PulseDock.app
+open /Applications/PulseDock.app
+```
+
+Use this only for a release package you trust. It is a temporary path for an unnotarized package; production releases should use Developer ID signing and Apple notarization.
+
 Quit the old app from the floating-panel context menu or menu bar before replacing it during an upgrade. Closing the panel does not quit the app.
 
 ### Build from source
