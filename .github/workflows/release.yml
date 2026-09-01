@@ -13,13 +13,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check tag and build
-        shell: zsh
+        shell: zsh {0}
         run: |
           VERSION="$(tr -d '[:space:]' < VERSION)"
           test "${GITHUB_REF_NAME}" = "v${VERSION}"
           ./scripts/build.sh
       - name: Create signed updater manifest
-        shell: zsh
+        shell: zsh {0}
         env:
           PULSEDOCK_UPDATE_PRIVATE_KEY_BASE64: ${{ secrets.PULSEDOCK_UPDATE_PRIVATE_KEY_BASE64 }}
         run: |
@@ -30,7 +30,7 @@ jobs:
           test -s "$NOTES"
           swift scripts/create_update_manifest.swift "$VERSION" "$URL" "outputs/$ZIP" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$NOTES" latest-macos-arm64.json
       - name: Verify manifest against release archive
-        shell: zsh
+        shell: zsh {0}
         run: |
           VERSION="$(tr -d '[:space:]' < VERSION)"
           ZIP="PulseDock-${VERSION}.zip"
