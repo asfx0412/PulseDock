@@ -12,6 +12,12 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install ripgrep for release checks
+        shell: zsh {0}
+        run: |
+          brew install ripgrep
+          command -v rg
+          rg --version
       - name: Check tag and build
         shell: zsh {0}
         run: |
