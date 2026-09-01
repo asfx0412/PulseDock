@@ -19,9 +19,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var desktopMenuItem: NSMenuItem?
     private var dockMenuItem: NSMenuItem?
     private var menuBarRepairScheduled = false
+    private let updateController = AppUpdateController()
+    private var updateCheckTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if activateExistingInstanceIfNeeded() { return }
+        confirmPostUpdateLaunchIfRequested()
         NSApp.setActivationPolicy(.accessory)
         configureMainMenu()
         panelController = FloatingPanelController(store: store)
@@ -36,6 +39,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in self?.ensureMenuBarItem() }
         store.start()
         panelController?.show()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in self?.updateController.automaticallyCheckForUpdate() }
+        updateCheckTimer = Timer.scheduledTimer(withTimeInterval: AppUpdateConfiguration.automaticCheckInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.updateController.automaticallyCheckForUpdate() }
+        }
+    }
+
+    /// The updater keeps the previous bundle until the replacement has made
+    /// it through normal AppKit launch.  The path is constrained to this
+    /// bundle's adjacent `.previous` name so command-line arguments cannot
+    /// be used to remove an arbitrary file.
+    private func confirmPostUpdateLaunchIfRequested() {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let flag = arguments.firstIndex(of: "--pulsedock-update-confirm"),
+              arguments.indices.contains(arguments.index(after: flag)) else { return }
+        let requested = URL(fileURLWithPath: arguments[arguments.index(after: flag)]).standardizedFileURL
+        let expected = Bundle.main.bundleURL.appendingPathExtension("previous").standardizedFileURL
+        guard requested == expected else { return }
+        try? FileManager.default.removeItem(at: expected)
     }
 
     /// LaunchServices normally enforces the plist flag, while this runtime guard
@@ -51,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        updateCheckTimer?.invalidate()
         hotKeyManager?.unregisterAll()
         store.stop()
     }
@@ -82,6 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(menuItem("收起到菜单栏", action: #selector(hideToMenuBar), key: "m"))
         menu.addItem(menuItem("收起到程序坞", action: #selector(hideToDock), key: "d"))
         menu.addItem(menuItem("刷新公网 IP", action: #selector(refreshIP), key: "r"))
+        menu.addItem(menuItem("检查更新…", action: #selector(checkForUpdates), key: "u"))
         menu.addItem(.separator())
         let desktop = menuItem("只在当前桌面显示（关闭则所有桌面）", action: #selector(toggleCurrentDesktop), key: "")
         let dock = menuItem("在程序坞显示图标", action: #selector(toggleDockIcon), key: "")
@@ -126,6 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func hideToMenuBar() { panelController?.minimizeToMenuBar() }
     @objc private func hideToDock() { panelController?.minimizeToDock() }
     @objc private func refreshIP() { store.refreshIP() }
+    @objc private func checkForUpdates() { updateController.checkForUpdate(userInitiated: true) }
     @objc func ensureMenuBarItem() {
         // Switching between .regular (Dock) and .accessory (menu bar only)
         // can invalidate the status window while leaving the NSStatusItem

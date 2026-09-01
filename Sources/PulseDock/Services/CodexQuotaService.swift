@@ -102,11 +102,19 @@ actor CodexQuotaService {
         }
 
         do {
-            let initialize = "{\"method\":\"initialize\",\"id\":1,\"params\":{\"clientInfo\":{\"name\":\"pulsedock\",\"title\":\"PulseDock\",\"version\":\"6.8.0\"}}}\n"
+            let initialize = "{\"method\":\"initialize\",\"id\":1,\"params\":{\"clientInfo\":{\"name\":\"pulsedock\",\"title\":\"PulseDock\",\"version\":\"6.14.0\"}}}\n"
             try input.fileHandleForWriting.write(contentsOf: Data(initialize.utf8))
-            let initializeDeadline = Date().addingTimeInterval(2)
+            // Newer app-server builds may be busy loading account state on a
+            // cold start.  Do not send `initialized` or a rate-limit request
+            // before an actual successful initialize response: such early
+            // messages are silently discarded by some builds.
+            let initializeDeadline = Date().addingTimeInterval(12)
             while collector.response(id: 1) == nil, process.isRunning, Date() < initializeDeadline {
                 _ = collector.updated.wait(timeout: .now() + 0.1)
+            }
+            guard let initializeResponse = collector.response(id: 1), responseSucceeded(initializeResponse) else {
+                stop(process, output: output, errors: errors, collector: collector)
+                return unavailable("Codex 初始化超时或未完成；将自动重试")
             }
             let requests = [
                 "{\"method\":\"initialized\",\"params\":{}}",
@@ -132,9 +140,14 @@ actor CodexQuotaService {
         stop(process, output: output, errors: errors, collector: collector)
 
         guard let rateData = collector.response(id: 2) else {
-            return unavailable("Codex 登录不可用或查询超时")
+            return unavailable("Codex 额度查询超时；将自动重试")
         }
         return decode(rateData, usageData: collector.response(id: 3))
+    }
+
+    private nonisolated static func responseSucceeded(_ data: Data) -> Bool {
+        guard let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return envelope["error"] == nil && envelope["result"] != nil
     }
 
     private nonisolated static func stop(_ process: Process, output: Pipe, errors: Pipe, collector: QuotaOutputCollector) {

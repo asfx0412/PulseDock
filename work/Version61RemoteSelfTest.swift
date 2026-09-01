@@ -94,6 +94,7 @@ enum Version61RemoteSelfTest {
         require(!RemoteNetworkScopeService.permitsRoutedPrivateTarget(hasPrivateTarget: false, tcpReachable: true), "公网目标不能被局域网路由探测误分类")
         require(RemoteNetworkScopeService.permitsSpecificPhysicalRoute(destination: "10.33.48.138", interface: "en0", activeInterfaces: ["en0"]), "经活动物理网卡的专用主机路由必须识别为局域网")
         require(!RemoteNetworkScopeService.permitsSpecificPhysicalRoute(destination: "default", interface: "en0", activeInterfaces: ["en0"]), "默认路由不能将任意私网地址误判为局域网")
+        require(!RemoteNetworkScopeService.permitsSpecificPhysicalRoute(destination: "10.33.48.138", interface: "en0", activeInterfaces: ["en0"], flags: "UP,GATEWAY,HOST,WASCLONED,IFSCOPE"), "默认网关派生的 WASCLONED 主机路由不能证明设备在附近")
         require(!RemoteNetworkScopeService.permitsSpecificPhysicalRoute(destination: "10.33.48.138", interface: "utun3", activeInterfaces: ["en0"]), "VPN 或非活动物理网卡路由不能误判为局域网")
         require(RemoteNetworkScope.localLAN.shortLabel == "局域网" && RemoteNetworkScope.publicInternet.shortLabel == "公网", "设备卡必须区分局域网与公网范围")
         print("PulseDock 6.2 remote self-test passed")

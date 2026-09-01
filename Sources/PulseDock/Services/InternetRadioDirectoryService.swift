@@ -167,7 +167,7 @@ actor InternetRadioDirectoryService {
                 components.queryItems = items
                 guard let url = components.url else { continue }
                 var request = URLRequest(url: url)
-                request.setValue("PulseDock/6.12.3 (macOS; personal desktop monitor)", forHTTPHeaderField: "User-Agent")
+                request.setValue("PulseDock/6.14.0 (macOS; personal desktop monitor)", forHTTPHeaderField: "User-Agent")
                 request.setValue("application/json", forHTTPHeaderField: "Accept")
                 let (bytes, response) = try await session.bytes(for: request)
                 guard let http = response as? HTTPURLResponse,

@@ -22,6 +22,12 @@ struct ClashQuotaSnapshot: Sendable, Equatable {
         updateIntervalMinutes: nil, message: "正在读取 Clash 订阅"
     )
 
+    static let locked = ClashQuotaSnapshot(
+        state: .unavailable, identifier: "clash-locked", sourceApp: "Clash", name: "Clash", usedBytes: 0, totalBytes: 0,
+        expiresAt: nil, updatedAt: nil, autoUpdateEnabled: false,
+        updateIntervalMinutes: nil, message: "解锁凭据保险库后读取本地订阅额度"
+    )
+
     var remainingBytes: UInt64 { totalBytes > usedBytes ? totalBytes - usedBytes : 0 }
     var usedPercent: Double { totalBytes > 0 ? Double(usedBytes) / Double(totalBytes) * 100 : 0 }
     var remainingPercent: Double { max(0, 100 - usedPercent) }

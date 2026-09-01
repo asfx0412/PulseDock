@@ -42,7 +42,7 @@ struct CodexDailyUsageBucket: Sendable, Equatable, Identifiable {
 
 struct QuotaSnapshot: Sendable, Equatable {
     enum State: String, Sendable {
-        case loading, available, unavailable, error
+        case loading, available, unavailable, error, waitingUnlock
     }
 
     var state: State
@@ -58,6 +58,7 @@ struct QuotaSnapshot: Sendable, Equatable {
     var tokenUsageSummary: CodexTokenUsageSummary? = nil
     var dailyUsageBuckets: [CodexDailyUsageBucket] = []
     var rateLimitReachedType: String? = nil
+    var refresh = RefreshMetadata()
 
     static let loading = QuotaSnapshot(
         state: .loading,
@@ -68,7 +69,21 @@ struct QuotaSnapshot: Sendable, Equatable {
         resetCreditCount: nil,
         resetCredits: [],
         message: "正在读取 Codex 额度",
-        updatedAt: nil
+        updatedAt: nil,
+        refresh: RefreshMetadata(status: .refreshing)
+    )
+
+    static let locked = QuotaSnapshot(
+        state: .waitingUnlock,
+        remainingPercent: nil,
+        resetsAt: nil,
+        windowMinutes: nil,
+        planType: nil,
+        resetCreditCount: nil,
+        resetCredits: [],
+        message: "解锁凭据保险库后读取额度",
+        updatedAt: nil,
+        refresh: .waitingUnlock
     )
 
     var remainingLabel: String {
@@ -110,5 +125,24 @@ struct QuotaSnapshot: Sendable, Equatable {
     var resetDateTimeLabel: String {
         guard let resetsAt else { return "--" }
         return resetsAt.formatted(date: .numeric, time: .shortened)
+    }
+
+    var hasDisplayPayload: Bool { remainingPercent != nil || !windows.isEmpty }
+
+    @discardableResult
+    mutating func copyDisplayPayload(from previous: QuotaSnapshot) -> Bool {
+        guard previous.hasDisplayPayload else { return false }
+        remainingPercent = previous.remainingPercent
+        resetsAt = previous.resetsAt
+        windowMinutes = previous.windowMinutes
+        planType = previous.planType
+        resetCreditCount = previous.resetCreditCount
+        resetCredits = previous.resetCredits
+        updatedAt = previous.updatedAt
+        windows = previous.windows
+        tokenUsageSummary = previous.tokenUsageSummary
+        dailyUsageBuckets = previous.dailyUsageBuckets
+        rateLimitReachedType = previous.rateLimitReachedType
+        return true
     }
 }

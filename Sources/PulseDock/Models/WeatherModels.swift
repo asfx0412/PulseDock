@@ -7,6 +7,31 @@ enum WeatherLocationMode: String, CaseIterable, Sendable {
     var label: String { self == .fixed ? "固定地点" : "自动跟随当前位置" }
 }
 
+/// Public, non-sensitive category for a failed weather read.  The full URL,
+/// coordinates and raw networking error remain local diagnostic evidence and
+/// are not rendered in the compact dashboard.
+enum WeatherFailure: Sendable, Equatable {
+    case invalidRequest
+    case network
+    case dns
+    case tls
+    case timeout
+    case http(Int)
+    case decoding
+
+    var label: String {
+        switch self {
+        case .invalidRequest: "请求地址无效"
+        case .network: "网络暂不可用"
+        case .dns: "DNS 解析失败"
+        case .tls: "TLS 连接失败"
+        case .timeout: "请求超时"
+        case let .http(status): "天气服务返回 HTTP \(status)"
+        case .decoding: "天气数据格式无效"
+        }
+    }
+}
+
 struct WeatherLocation: Codable, Sendable, Equatable, Identifiable {
     var name: String
     var admin2: String? = nil
@@ -52,11 +77,14 @@ struct WeatherSnapshot: Sendable, Equatable {
     var moonPhase: Double?
     var updatedAt: Date?
     var message: String
+    var refresh = RefreshMetadata()
+    var failure: WeatherFailure? = nil
 
     static let unconfigured = WeatherSnapshot(
         state: .unavailable, location: nil, temperature: nil, apparentTemperature: nil,
         windSpeed: nil, precipitationProbability: nil, weatherCode: nil, isDay: true,
-        sunrise: nil, sunset: nil, moonPhase: nil, updatedAt: nil, message: "请在设置中选择城市"
+        sunrise: nil, sunset: nil, moonPhase: nil, updatedAt: nil, message: "请在设置中选择城市",
+        refresh: RefreshMetadata(status: .initialFailure)
     )
 
     var temperatureLabel: String { temperature.map { String(format: "%.0f°C", $0) } ?? "--" }
@@ -76,6 +104,27 @@ struct WeatherSnapshot: Sendable, Equatable {
         if let sunset { parts.append("日落 \(sunset.formatted(date: .omitted, time: .shortened))") }
         parts.append(moonPhaseLabel)
         return parts.joined(separator: " · ")
+    }
+
+    var hasDisplayPayload: Bool {
+        temperature != nil || apparentTemperature != nil || weatherCode != nil
+    }
+
+    @discardableResult
+    mutating func copyDisplayPayload(from previous: WeatherSnapshot) -> Bool {
+        guard previous.hasDisplayPayload else { return false }
+        location = previous.location
+        temperature = previous.temperature
+        apparentTemperature = previous.apparentTemperature
+        windSpeed = previous.windSpeed
+        precipitationProbability = previous.precipitationProbability
+        weatherCode = previous.weatherCode
+        isDay = previous.isDay
+        sunrise = previous.sunrise
+        sunset = previous.sunset
+        moonPhase = previous.moonPhase
+        updatedAt = previous.updatedAt
+        return true
     }
 }
 

@@ -4,8 +4,15 @@ set -euo pipefail
 PROJECT_DIR="${0:A:h:h}"
 cd "$PROJECT_DIR"
 
-SDK_PATH="/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
-SWIFTC="/Library/Developer/CommandLineTools/usr/bin/swiftc"
+if [[ -d /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk && -x /Library/Developer/CommandLineTools/usr/bin/swiftc ]]; then
+  DEFAULT_SDK_PATH="/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
+  DEFAULT_SWIFTC="/Library/Developer/CommandLineTools/usr/bin/swiftc"
+else
+  DEFAULT_SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
+  DEFAULT_SWIFTC="$(xcrun --find swiftc)"
+fi
+SDK_PATH="${PULSEDOCK_SDK_PATH:-$DEFAULT_SDK_PATH}"
+SWIFTC="${PULSEDOCK_SWIFTC:-$DEFAULT_SWIFTC}"
 BUILD_DIR="$PROJECT_DIR/.build"
 APP_PATH="$PROJECT_DIR/outputs/PulseDock.app"
 VERSION="$(tr -d '[:space:]' < "$PROJECT_DIR/VERSION")"

@@ -39,16 +39,30 @@ actor WeatherService {
             URLQueryItem(name: "timezone", value: location.timezone),
             URLQueryItem(name: "forecast_days", value: "2")
         ]
-        guard let url = components.url else { return unavailable(location, "天气请求无法创建") }
+        guard let url = components.url else { return unavailable(location, "天气请求无法创建", failure: .invalidRequest) }
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
-            guard (response as? HTTPURLResponse)?.statusCode == 200,
-                  let snapshot = Self.decode(data: data, location: location, now: Date()) else {
-                return unavailable(location, "天气服务暂时不可用")
+            guard let http = response as? HTTPURLResponse else {
+                return unavailable(location, "天气服务响应无效", failure: .network)
             }
+            guard http.statusCode == 200 else {
+                return unavailable(location, "天气服务暂时不可用", failure: .http(http.statusCode))
+            }
+            guard var snapshot = Self.decode(data: data, location: location, now: Date()) else {
+                return unavailable(location, "天气数据格式无效", failure: .decoding)
+            }
+            snapshot.refresh = .fresh(at: snapshot.updatedAt ?? Date())
             return snapshot
         } catch {
-            return unavailable(location, "天气更新失败")
+            let urlError = error as? URLError
+            let failure: WeatherFailure
+            switch urlError?.code {
+            case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed: failure = .dns
+            case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateHasUnknownRoot: failure = .tls
+            case .timedOut: failure = .timeout
+            default: failure = .network
+            }
+            return unavailable(location, failure.label, failure: failure)
         }
     }
 
@@ -83,10 +97,11 @@ actor WeatherService {
         return formatter.date(from: value)
     }
 
-    private func unavailable(_ location: WeatherLocation, _ message: String) -> WeatherSnapshot {
+    private func unavailable(_ location: WeatherLocation, _ message: String, failure: WeatherFailure) -> WeatherSnapshot {
         var snapshot = WeatherSnapshot.unconfigured
         snapshot.location = location
         snapshot.message = message
+        snapshot.failure = failure
         return snapshot
     }
 }

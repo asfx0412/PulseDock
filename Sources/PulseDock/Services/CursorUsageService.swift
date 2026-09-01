@@ -63,7 +63,25 @@ actor CursorUsageService {
             let auto = (usage["autoPercentUsed"] as? NSNumber)?.doubleValue
             let api = (usage["apiPercentUsed"] as? NSNumber)?.doubleValue
             let detail = [percent.map { String(format: "综合已用 %.0f%%", $0) }, auto.map { String(format: "Auto %.0f%%", $0) }, api.map { String(format: "指定模型 %.0f%%", $0) }].compactMap { $0 }.joined(separator: " · ")
-            return APIConnectorSnapshot(id: id, state: .available, remainingRequests: amount, remainingTokens: detail.isEmpty ? nil : detail, resetAt: cycleEnd, updatedAt: Date(), message: "Cursor 本地会话 · 非官方实验性接口")
+            // Settings deliberately exposes the two independently reported
+            // components.  The Workbench uses totalPercentUsed below as its
+            // single concise source-owned summary, not the lowest component.
+            var windows: [APIUsageWindow] = []
+            if let auto {
+                windows.append(APIUsageWindow(id: "cursor-auto", title: "Auto", windowNumber: nil, usedPercent: auto, resetAt: cycleEnd))
+            }
+            if let api {
+                windows.append(APIUsageWindow(id: "cursor-specified", title: "指定模型", windowNumber: nil, usedPercent: api, resetAt: cycleEnd))
+            }
+            if windows.isEmpty, let percent {
+                windows = [APIUsageWindow(id: "cursor-overall", title: "综合额度", windowNumber: nil, usedPercent: percent, resetAt: cycleEnd)]
+            }
+            return APIConnectorSnapshot(
+                id: id, state: .available, remainingRequests: amount, remainingTokens: detail.isEmpty ? nil : detail,
+                resetAt: cycleEnd, updatedAt: Date(), message: "Cursor 本地会话 · 非官方实验性接口",
+                usageWindows: windows,
+                primaryRemainingPercent: percent.map { max(0, min(100, 100 - $0)) }
+            )
         } catch {
             return APIConnectorSnapshot(id: id, state: .error, updatedAt: Date(), message: "Cursor 用量请求失败：\(error.localizedDescription)")
         }

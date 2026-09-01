@@ -13,8 +13,9 @@ enum Version65FormattingSelfTest {
         require(DisplayFormat.speed(1_500_000_000) == "1.5 GB/s", "GB speed formatting")
         var identity = IPIdentity(); identity.countryCode = "CN"
         require(identity.isMainlandChina && identity.scopeLabel == "中国大陆", "mainland IP scope")
-        identity.countryCode = "US"
+        identity.countryCode = "US"; identity.country = "United States"; identity.city = "Los Angeles"; identity.address = "2001:49f0:d0b3:ff00::3"
         require(!identity.isMainlandChina && identity.scopeLabel == "境外出口", "foreign IP scope")
+        require(identity.locationHeadline == "美国 · Los Angeles" && identity.addressFamilyLabel == "IPv6", "exit location presentation")
         require(ActivityFormat.duration(59) == "59秒" && ActivityFormat.duration(3_900) == "1小时5分", "activity duration formatting")
         require(WeatherPresentation.condition(code: 95) == "雷雨" && WeatherPresentation.moonPhase(0.5) == "满月", "weather presentation")
         let clash = ClashQuotaSnapshot(

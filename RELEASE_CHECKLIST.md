@@ -61,6 +61,8 @@
 - [ ] 更新 `CHANGELOG.md`。
 - [ ] 更新 `README.md` 当前版本摘要。
 - [ ] 更新 `outputs/PulseDock使用文档.md`。
+- [ ] 生成与当前版本号一致的 `outputs/PulseDock-<版本>测试报告.md`。
+- [ ] 生成与当前版本号一致的 `outputs/PulseDock-<版本>发布说明.md`，并写入最终 ZIP SHA-256。
 - [ ] 更新 `BACKLOG.md`，已完成项移入更新日志，未完成项保留。
 - [ ] 若测试流程或安全边界变化，同步更新 `TESTING.md` / `SECURITY.md`。
 - [ ] 最终回复提供 App、ZIP、用户手册和更新日志的可点击路径。

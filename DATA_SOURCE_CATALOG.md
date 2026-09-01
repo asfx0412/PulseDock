@@ -4,15 +4,15 @@
 |---|---|---:|---|---|
 | CPU/内存/网络 | macOS 本机系统接口 | 2 秒 | 无秘密 | 显示不可用 |
 | GPU/温度/热状态 | IOKit/系统热状态 | 2 秒 | 无秘密 | 用系统热状态，不伪造温度 |
-| 公网 IP/归属 | 外部 IP 服务 | 手动/网络变化 | 只发网络请求 | 保留上次值并标陈旧 |
+| 公网 IP/归属 | 外部 IP 服务 | 手动/网络变化 | 只发网络请求 | 首屏仅国家/城市与代理/直连观测路径；IP 进详情；不参与天气或局域网判断 |
 | AI 网络诊断 | DNS、TCP、TLS、HTTP 与系统代理 | 手动/8 秒基础探针 | 不记录请求内容 | 分阶段显示失败 |
-| Codex 额度/重置券 | OpenAI 本机 Codex app-server `account/rateLimits/read` | 5 分钟 | 本机登录态；不导出 Token | 多窗口独立显示；旧组件不可用时显示原因 |
-| Codex Token 活动 | OpenAI 本机 Codex app-server `account/usage/read` | 随额度读取 | 本机登录态；仅汇总值 | 独立降级，不影响额度；不得称为剩余额度 |
+| Codex 额度/重置券 | OpenAI 本机 Codex app-server `account/rateLimits/read` | 解锁后每 5 分钟 | 本机登录态；不导出 Token | 每次运行先解锁统一门禁；多窗口独立显示 |
+| Codex Token 活动 | OpenAI 本机 Codex app-server `account/usage/read` | 解锁后随额度读取 | 本机登录态；仅汇总值 | 解锁前不读取；独立降级，不影响额度 |
 | 社区重置 | Codex Runway 公共 JSON | 30 分钟 | 第三方、无秘密 | 标记第三方/陈旧 |
-| Cursor 额度 | 本机 state.vscdb access token + 内部只读接口 | 手动/5 分钟 | token 仅内存 | 401 提示 Cursor 重新登录 |
+| Cursor 额度 | 本机 state.vscdb access token + 内部只读接口 | 解锁后手动/5 分钟 | token 仅内存 | 紧凑摘要仅显示综合剩余百分比；401 提示重新登录 |
 | GLM Coding Plan | 用户指定官方用量端点 | 5 分钟 | API Key 在统一保险库 | 单飞；字段变化失败时保留上次成功快照；不调用模型探测 |
 | DeepSeek 余额 | 官方余额端点（若账户支持） | 5 分钟 | API Key 在统一保险库 | 无公开余额则明确不可用 |
-| Clash 流量 | 本机兼容订阅 YAML | 文件变化/5 分钟 | 不读取订阅 URL | 显示文件时间与陈旧状态 |
+| Clash 流量 | 本机兼容订阅 YAML | 解锁后文件变化/5 分钟 | 不读取订阅 URL | 解锁前不读取、不显示；之后显示文件时间与陈旧状态 |
 | Mihomo 同步 | 回环地址 External Controller 或 Clash Verge 固定本机 Unix Socket | 手动/5 分钟 | Secret 在统一保险库 | 控制器失败仍读本地流量；不扫描任意 socket |
 | 天气/日出日落 | Open-Meteo | 30 分钟 | 城市或主动授权坐标 | 保留手动城市/上次天气 |
 | 中国节假日 | 项目内官方年度日历数据 | 每日 | 无秘密 | 未覆盖年份按工作日设置 |

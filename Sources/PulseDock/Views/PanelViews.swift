@@ -88,8 +88,14 @@ private struct CompactPanel: View {
             if state.compactDensity == .balanced {
                 HStack(spacing: 5) {
                     CompactChip(icon: "timer", value: store.pomodoroPhase == .idle ? "\(store.completedFocusToday) 轮" : store.pomodoroTimeLabel, tint: store.pomodoroPhase == .idle ? .secondary : store.pomodoroPhase.color)
-                    CompactChip(icon: "gauge.with.dots.needle.67percent", value: store.codexQuota.riskRemainingLabel, tint: store.codexQuota.riskRemainingPercent.map { $0 <= 15 ? .orange : .secondary } ?? .secondary)
-                    CompactChip(icon: "bolt.horizontal.circle", value: store.clashQuota.compactLabel, tint: store.clashQuota.remainingPercent <= 10 ? .orange : .secondary)
+                    if let quota = store.compactPinnedQuotaPresentation {
+                        CompactChip(icon: "gauge.with.dots.needle.67percent", value: quota.value, tint: quota.color)
+                            .help("\(quota.title) · \(quota.detail)")
+                    }
+                    if store.credentialVaultUnlocked {
+                        CompactChip(icon: "bolt.horizontal.circle", value: store.clashQuota.compactLabel, tint: store.clashQuota.remainingPercent <= 10 ? .orange : .green)
+                            .help("Clash 剩余额度 · \(store.clashQuota.message)")
+                    }
                     CompactChip(icon: store.weather.symbol, value: store.weather.temperatureLabel, tint: .secondary)
                     Spacer(minLength: 0)
                 }
@@ -258,14 +264,21 @@ private struct ExpandedPanel: View {
                     Image(systemName: store.weather.symbol).font(.system(size: 25)).foregroundStyle(store.weather.isDay ? .orange : .indigo).frame(width: 32)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(store.weather.location?.displayName ?? "尚未选择天气城市").font(.system(size: 10.5, weight: .bold)).lineLimit(1)
-                        Text(store.weather.state == .available ? store.weather.metricsLabel : store.weather.message)
+                        Text(store.weather.hasDisplayPayload ? store.weather.metricsLabel : store.weather.message)
                             .font(.system(size: 8.5)).foregroundStyle(.secondary).lineLimit(1)
-                        if store.weather.state == .available {
+                        if store.weather.hasDisplayPayload {
                             Text("Open-Meteo · \(store.weatherFreshnessLabel) · \(store.weather.celestialLabel)").font(.system(size: 8)).foregroundStyle(.tertiary).lineLimit(1)
                         }
                     }
                     Spacer()
                     Text(store.weather.temperatureLabel).font(.system(size: 22, weight: .bold, design: .rounded))
+                    if store.weather.refresh.status == .stale || store.weather.refresh.status == .initialFailure {
+                        DataFailureHintButton(
+                            title: "天气更新暂时失败",
+                            metadata: store.weather.refresh,
+                            retry: store.refreshWeather
+                        )
+                    }
                     RefreshIconButton(isRefreshing: store.isRefreshingWeather, action: store.refreshWeather, help: "刷新天气")
                 }
             }
@@ -311,9 +324,21 @@ private struct ExpandedPanel: View {
                 }
             }
 
-            HStack(spacing: 10) {
-                MiniQuota(title: "Codex", value: store.codexQuota.riskRemainingLabel, detail: "最低剩余额度周期 · \(store.codexFreshnessLabel)", color: store.codexQuota.riskRemainingPercent.map { $0 <= 15 ? .orange : .green } ?? .secondary, isRefreshing: store.isRefreshingQuota) { store.refreshQuota() }
-                MiniQuota(title: store.clashQuota.name, value: store.clashQuota.compactLabel, detail: store.isRefreshingClash ? "正在重读本地订阅…" : "本地订阅 · \(store.clashFreshnessLabel)", color: store.clashQuota.remainingPercent <= 10 ? .orange : .blue, isRefreshing: store.isRefreshingClash) { store.refreshClashQuota() }
+            if !store.dashboardQuotaPresentations.isEmpty {
+                Card {
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack {
+                            Label("额度概览", systemImage: "gauge.with.dots.needle.67percent").font(.system(size: 11, weight: .bold))
+                            Text("工作台可选多个；小窗口只显示一个置顶来源").font(.system(size: 8)).foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                            ForEach(store.dashboardQuotaPresentations) { quota in
+                                MiniQuota(quota: quota) { store.refreshAPIConnector(quota.id) }
+                            }
+                        }
+                    }
+                }
             }
 
             Card {
@@ -835,9 +860,31 @@ private struct ExpandedPanel: View {
             Card {
                 VStack(alignment: .leading, spacing: 7) {
                     HStack { Label("当前出口", systemImage: "globe.asia.australia.fill").font(.system(size: 11, weight: .bold)); Spacer(); RefreshIconButton(isRefreshing: store.isRefreshingIP, action: store.refreshIP, help: "刷新公网 IP") }
-                    Text(store.ip.address).font(.system(size: 18, weight: .bold, design: .monospaced))
-                    Text("\(store.ip.locationLine) · \(store.ip.isp)").font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(2)
-                    HStack { Badge(text: store.ip.scopeLabel, color: store.ip.isMainlandChina ? .blue : .purple); if store.vpnActive { Badge(text: "VPN/TUN", color: .orange) }; if store.proxyActive { Badge(text: "系统代理", color: .indigo) } }
+                    Text(store.ip.locationHeadline).font(.system(size: 18, weight: .bold))
+                    HStack {
+                        Badge(text: store.ip.scopeLabel, color: store.ip.isMainlandChina ? .blue : .purple)
+                        Badge(text: store.proxyActive ? "经系统代理观测" : "直连观测", color: store.proxyActive ? .indigo : .green)
+                        if store.vpnActive { Badge(text: "VPN/TUN", color: .orange) }
+                    }
+                    DisclosureGroup {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 5) {
+                                Text("公网地址：\(store.ip.address)（\(store.ip.addressFamilyLabel)）")
+                                Button { store.copyIPAddress() } label: { Image(systemName: "doc.on.doc") }
+                                    .buttonStyle(.plain).help("复制公网地址")
+                            }
+                            Text("位置信息：\(store.ip.locationLine)")
+                            if !store.ip.isp.isEmpty { Text("网络提供方：\(store.ip.isp)") }
+                            Text("查询时间：\(store.ipFreshnessLabel)")
+                            Text("仅用于网络出口观察，不参与天气、设备范围或其他位置判断。")
+                                .foregroundStyle(.tertiary)
+                        }
+                        .font(.system(size: 8.5))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 2)
+                    } label: {
+                        Text("查看出口详情").font(.system(size: 8.5, weight: .medium)).foregroundStyle(.secondary)
+                    }
                 }
             }
             Card {
@@ -992,19 +1039,20 @@ private struct ExpandedPanel: View {
             Card {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Label("API 额度连接器", systemImage: "key.horizontal").font(.system(size: 12, weight: .bold))
+                        Label("额度连接器", systemImage: "gauge.with.dots.needle.67percent").font(.system(size: 12, weight: .bold))
                         Spacer()
-                        RefreshIconButton(isRefreshing: store.isRefreshingAPIConnectors, action: { store.refreshAPIConnectors() }, help: "刷新全部 API 连接器")
+                        RefreshIconButton(isRefreshing: store.isRefreshingAPIConnectors, action: { store.refreshAPIConnectors() }, help: "刷新全部额度连接器")
                     }
                     DisclosureGroup("添加新的额度来源") {
                         VStack(alignment: .leading, spacing: 7) {
                             Picker("类型", selection: $store.newAPIConnectorKind) {
-                                ForEach(APIConnectorKind.allCases, id: \.self) { kind in Text(LocalizedStringKey(kind.label)).tag(kind) }
+                                ForEach(APIConnectorKind.allCases.filter { !$0.isBuiltInSingleton }, id: \.self) { kind in Text(LocalizedStringKey(kind.label)).tag(kind) }
                             }
                             .pickerStyle(.menu)
                             .onChange(of: store.newAPIConnectorKind) { _, kind in
                                 if kind != .customRateLimit { store.newAPIConnectorEndpoint = kind.defaultEndpoint }
                                 switch kind {
+                                case .codexLocalQuota: break
                                 case .cursorLocalUsage: store.newAPIConnectorName = "Cursor 个人额度"
                                 case .glmCodingPlan: store.newAPIConnectorName = "GLM Coding Plan"
                                 case .deepSeekBalance: store.newAPIConnectorName = "DeepSeek"
@@ -1031,13 +1079,14 @@ private struct ExpandedPanel: View {
                         }
                     }.font(.system(size: 9.5))
                     ForEach(store.orderedAPIConnectors) { connector in
-                        let snapshot = store.apiConnectorSnapshots[connector.id] ?? APIConnectorSnapshot(id: connector.id)
+                        let snapshot = store.apiConnectorSnapshot(for: connector)
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 6) {
                             Circle().fill(snapshot.color).frame(width: 8, height: 8)
                             VStack(alignment: .leading, spacing: 1) {
                                 HStack(spacing: 4) {
-                                    if connector.pinned { Image(systemName: "pin.fill").font(.system(size: 7)).foregroundStyle(.blue) }
+                                    if connector.showOnDashboard { Image(systemName: "rectangle.grid.2x2.fill").font(.system(size: 7)).foregroundStyle(.blue) }
+                                    if connector.pinned { Image(systemName: "pin.fill").font(.system(size: 7)).foregroundStyle(.orange) }
                                     Text(connector.name).font(.system(size: 10.5, weight: .semibold))
                                 }
                                 Text(LocalizedStringKey(connector.kind.label)).font(.system(size: 7.5)).foregroundStyle(.tertiary)
@@ -1046,11 +1095,14 @@ private struct ExpandedPanel: View {
                             Button { store.refreshAPIConnector(connector.id) } label: { Image(systemName: "arrow.clockwise") }
                                 .buttonStyle(.plain).foregroundStyle(.blue).help("仅刷新 \(connector.name)")
                             Menu {
-                                Button(connector.pinned ? "取消置顶" : "置顶") { store.toggleAPIConnectorPinned(connector.id) }
+                                Button(connector.showOnDashboard ? "从工作台隐藏" : "在工作台显示") { store.toggleAPIConnectorDashboard(connector.id) }
+                                Button(connector.pinned ? "取消小窗口置顶" : "置顶到小窗口") { store.toggleAPIConnectorPinned(connector.id) }
                                 Button("上移") { store.moveAPIConnector(connector.id, direction: -1) }
                                 Button("下移") { store.moveAPIConnector(connector.id, direction: 1) }
-                                Divider()
-                                Button("移除连接器", role: .destructive) { store.removeAPIConnector(connector.id) }
+                                if !connector.kind.isBuiltInSingleton {
+                                    Divider()
+                                    Button("移除连接器", role: .destructive) { store.removeAPIConnector(connector.id) }
+                                }
                             } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
                             }
                             if snapshot.usageWindows.isEmpty {
@@ -1113,7 +1165,7 @@ private struct ExpandedPanel: View {
                         }
                         .padding(8).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     }
-                    Text("额度探测只访问指定的官方端点。Cursor 使用本机登录会话；其余 API Key 仅在解锁后的内存与统一保险库中使用。")
+                    Text("工作台可显示多个额度来源；小窗口最多置顶一个。每次启动需先解锁一次保险库，解锁前 Codex、Cursor、Clash 与 API 额度均不读取、不显示。")
                         .font(.system(size: 8)).foregroundStyle(.tertiary)
                 }.controlSize(.small)
             }
@@ -2440,13 +2492,77 @@ private struct ChinaHolidayCalendarPopover: View {
 }
 
 private struct MiniQuota: View {
-    let title: String; let value: String; let detail: String; let color: Color; let isRefreshing: Bool; let refresh: () -> Void
+    let quota: QuotaPresentation
+    let refresh: () -> Void
     var body: some View {
-        Card {
+        VStack(alignment: .leading, spacing: 3) {
             HStack {
-                VStack(alignment: .leading, spacing: 3) { Text(title).font(.system(size: 10, weight: .bold)); Text(value).font(.system(size: 20, weight: .bold, design: .rounded)).foregroundStyle(color); Text(detail).font(.system(size: 8)).foregroundStyle(.secondary).lineLimit(1) }
-                Spacer(); RefreshIconButton(isRefreshing: isRefreshing, action: refresh, help: "刷新\(title)")
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(quota.title).font(.system(size: 10, weight: .bold)).lineLimit(1)
+                    Text(quota.value).font(.system(size: 20, weight: .bold, design: .rounded)).foregroundStyle(quota.color).lineLimit(1)
+                    Text(quota.detail).font(.system(size: 8)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer()
+                if quota.hasRecoverableFailure {
+                    DataFailureHintButton(
+                        title: "\(quota.title) 更新暂时失败",
+                        metadata: RefreshMetadata(
+                            status: quota.freshness == .stale ? .stale : .initialFailure,
+                            lastSuccessAt: quota.lastSuccessAt,
+                            failureMessage: quota.failureMessage,
+                            failureCount: quota.failureCount,
+                            nextRetryAt: quota.nextRetryAt
+                        ),
+                        retry: refresh
+                    )
+                }
+                RefreshIconButton(isRefreshing: quota.isRefreshing, action: refresh, help: "刷新\(quota.title)")
             }
+        }
+        .padding(8)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+/// Keeps the workbench compact while still giving a temporary data failure a
+/// clear explanation and a user-controlled retry path.
+private struct DataFailureHintButton: View {
+    let title: String
+    let metadata: RefreshMetadata
+    let retry: () -> Void
+    @State private var showingDetails = false
+
+    var body: some View {
+        Button { showingDetails = true } label: {
+            Image(systemName: metadata.failureCount >= 3 ? "exclamationmark.triangle.fill" : "exclamationmark.circle")
+                .foregroundStyle(metadata.failureCount >= 3 ? .red : .orange)
+        }
+        .buttonStyle(.plain)
+        .help("查看更新状态")
+        .popover(isPresented: $showingDetails, arrowEdge: .trailing) {
+            VStack(alignment: .leading, spacing: 7) {
+                Label(title, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .bold)).foregroundStyle(metadata.failureCount >= 3 ? .red : .orange)
+                Text(metadata.failureMessage ?? "数据源暂时未返回结果")
+                    .font(.system(size: 9)).fixedSize(horizontal: false, vertical: true)
+                if let success = metadata.lastSuccessAt {
+                    Text("上次成功：\(success.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.system(size: 8.5)).foregroundStyle(.secondary)
+                }
+                if let retryAt = metadata.nextRetryAt {
+                    Text("下次自动重试：\(retryAt.formatted(date: .omitted, time: .shortened))")
+                        .font(.system(size: 8.5)).foregroundStyle(.secondary)
+                }
+                if metadata.failureCount >= 3 {
+                    Text("已连续失败 \(metadata.failureCount) 次；可检查网络、代理或登录状态。")
+                        .font(.system(size: 8.5)).foregroundStyle(.red)
+                }
+                HStack {
+                    Spacer()
+                    Button("立即重试") { showingDetails = false; retry() }.controlSize(.small)
+                }
+            }
+            .padding(11).frame(width: 245)
         }
     }
 }

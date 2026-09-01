@@ -15,8 +15,13 @@ final class FormattingTests: XCTestCase {
         XCTAssertTrue(identity.isMainlandChina)
         XCTAssertEqual(identity.scopeLabel, "中国大陆")
         identity.countryCode = "US"
+        identity.country = "United States"
+        identity.city = "Los Angeles"
+        identity.address = "2001:49f0:d0b3:ff00::3"
         XCTAssertFalse(identity.isMainlandChina)
         XCTAssertEqual(identity.scopeLabel, "境外出口")
+        XCTAssertEqual(identity.locationHeadline, "美国 · Los Angeles")
+        XCTAssertEqual(identity.addressFamilyLabel, "IPv6")
     }
 
     func testActivityFormatting() {

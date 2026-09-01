@@ -33,7 +33,7 @@ actor AudioStreamPreflightService {
         var request = URLRequest(url: url)
         request.setValue("bytes=0-1", forHTTPHeaderField: "Range")
         request.setValue("audio/*, application/vnd.apple.mpegurl, application/octet-stream;q=0.8", forHTTPHeaderField: "Accept")
-        request.setValue("PulseDock/6.12.3", forHTTPHeaderField: "User-Agent")
+        request.setValue("PulseDock/6.14.0", forHTTPHeaderField: "User-Agent")
         let start = ContinuousClock.now
         do {
             let (bytes, response) = try await session.bytes(for: request)

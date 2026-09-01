@@ -160,6 +160,17 @@ struct IPIdentity: Codable, Equatable, Sendable {
         let parts = [country, region, city].filter { !$0.isEmpty }
         return parts.isEmpty ? "未知位置" : parts.joined(separator: " · ")
     }
+    var localizedCountry: String {
+        guard !countryCode.isEmpty else { return country.isEmpty ? "未知国家" : country }
+        return Locale(identifier: "zh_Hans_CN").localizedString(forRegionCode: countryCode.uppercased()) ?? country
+    }
+    var locationHeadline: String {
+        let parts = [localizedCountry, city].filter { !$0.isEmpty && $0 != "未知国家" }
+        return parts.isEmpty ? "出口位置未知" : parts.joined(separator: " · ")
+    }
+    var addressFamilyLabel: String {
+        address.contains(":") ? "IPv6" : (address.contains(".") ? "IPv4" : "地址未知")
+    }
 }
 
 struct DiagnosticEvent: Identifiable, Sendable {

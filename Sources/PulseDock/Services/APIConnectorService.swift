@@ -6,6 +6,10 @@ actor APIConnectorService {
 
     func probe(_ connector: APIConnectorConfiguration, apiKey: String) async -> APIConnectorSnapshot {
         switch connector.kind {
+        case .codexLocalQuota:
+            // MonitorStore adapts the already-read CodexQuotaService snapshot.
+            // Keeping this branch inert prevents a duplicate app-server query.
+            return APIConnectorSnapshot(id: connector.id, state: .unavailable, updatedAt: Date(), message: "Codex 由本机官方额度读取器提供")
         case .cursorLocalUsage:
             return await cursorUsage.readCurrentPeriodUsage(id: connector.id)
         case .glmCodingPlan:

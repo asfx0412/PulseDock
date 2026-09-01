@@ -29,7 +29,7 @@ final class MonitorStore: ObservableObject {
     @Published var thermalRisk = ThermalRiskSnapshot()
     @Published var speedHistory: [SpeedSample] = []
     @Published var lastIPUpdate: Date?
-    @Published var codexQuota = QuotaSnapshot.loading
+    @Published var codexQuota = QuotaSnapshot.locked
     @Published var codexCommunityReset = CodexCommunityResetSnapshot.loading
     @Published var weather = WeatherSnapshot.unconfigured
     @Published var weatherLocation: WeatherLocation? { didSet { persistWeatherLocation(); refreshWeather() } }
@@ -52,7 +52,7 @@ final class MonitorStore: ObservableObject {
     @Published private(set) var isRefreshingIP = false
 
     @Published var diagnosticReport = NetworkDiagnosticReport.idle
-    @Published var clashQuota = ClashQuotaSnapshot.loading
+    @Published var clashQuota = ClashQuotaSnapshot.locked
     @Published var clashSubscriptions: [ClashQuotaSnapshot] = []
     @Published var selectedClashIdentifier: String { didSet { UserDefaults.standard.set(selectedClashIdentifier, forKey: PreferenceKey.selectedClash) ; applySelectedClash() } }
     @Published var clashControllerEnabled: Bool { didSet { UserDefaults.standard.set(clashControllerEnabled, forKey: PreferenceKey.clashControllerEnabled) } }
@@ -132,6 +132,8 @@ final class MonitorStore: ObservableObject {
     private let apiConnectorService = APIConnectorService()
     let ambientSound = AmbientSoundService()
     private var apiConnectorKeyCache: [UUID: String] = [:]
+    private var apiConnectorRefreshGeneration: [UUID: Int] = [:]
+    private var quotaAccessGeneration = 0
     private var credentialVault = CredentialVault()
     private let eventLedger: EventLedger
     var timelineStorageError: String? { eventLedger.lastWriteError }
@@ -142,6 +144,10 @@ final class MonitorStore: ObservableObject {
     private var communityResetTask: Task<Void, Never>?
     private var weatherTask: Task<Void, Never>?
     private var weatherReadTask: Task<Void, Never>?
+    private var weatherReadLocationID: String?
+    private var quotaRetryTask: Task<Void, Never>?
+    private var weatherRetryTask: Task<Void, Never>?
+    private var apiConnectorRetryTasks: [UUID: Task<Void, Never>] = [:]
     private var clashTask: Task<Void, Never>?
     private var clockTask: Task<Void, Never>?
     private var remoteTask: Task<Void, Never>?
@@ -253,6 +259,9 @@ final class MonitorStore: ObservableObject {
         clashWatcher.onChange = { [weak self] in Task { @MainActor in self?.refreshClashQuota() } }
         updateWorkStatus(notify: false)
         refreshActivityRankings()
+        // Persist configuration migrations (including the built-in Codex
+        // connector) immediately, without touching the credential vault.
+        persistAPIConnectors()
     }
 
     func start() {
@@ -266,7 +275,6 @@ final class MonitorStore: ObservableObject {
         }
         PulseDockNotifications.requestAuthorization()
         refreshIP()
-        refreshClashQuota()
         refreshWeather()
         // Remote probes begin after NWPathMonitor has delivered its first
         // authoritative path. The pre-callback state is not an offline state.
@@ -286,8 +294,9 @@ final class MonitorStore: ObservableObject {
         quotaTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                self.codexQuota = await self.quotaService.read()
-                self.evaluateQuotaState()
+                if self.credentialVaultUnlocked {
+                    self.refreshQuota()
+                }
                 try? await Task.sleep(for: .seconds(300))
             }
         }
@@ -322,9 +331,11 @@ final class MonitorStore: ObservableObject {
     }
 
     func stop() {
-        [metricTask, probeTask, quotaTask, communityResetTask, weatherTask, weatherReadTask, clashTask, clockTask, remoteTask, apiConnectorTask].forEach { $0?.cancel() }
+        [metricTask, probeTask, quotaTask, communityResetTask, weatherTask, weatherReadTask, quotaRetryTask, weatherRetryTask, clashTask, clockTask, remoteTask, apiConnectorTask].forEach { $0?.cancel() }
+        apiConnectorRetryTasks.values.forEach { $0.cancel() }
+        apiConnectorRetryTasks.removeAll()
         if let panelShownObserver { NotificationCenter.default.removeObserver(panelShownObserver); self.panelShownObserver = nil }
-        metricTask = nil; probeTask = nil; quotaTask = nil; communityResetTask = nil; weatherTask = nil; weatherReadTask = nil; clashTask = nil; clockTask = nil; remoteTask = nil; apiConnectorTask = nil
+        metricTask = nil; probeTask = nil; quotaTask = nil; communityResetTask = nil; weatherTask = nil; weatherReadTask = nil; quotaRetryTask = nil; weatherRetryTask = nil; clashTask = nil; clockTask = nil; remoteTask = nil; apiConnectorTask = nil
         clashWatcher.stop(); pathObserver.stop()
         mainThreadResponsivenessMonitor.stop()
         let center = NSWorkspace.shared.notificationCenter
@@ -347,12 +358,23 @@ final class MonitorStore: ObservableObject {
     }
 
     func refreshQuota() {
-        guard !isRefreshingQuota else { return }
+        guard credentialVaultUnlocked, !isRefreshingQuota else { return }
         isRefreshingQuota = true
-        codexQuota = .loading
+        let generation = quotaAccessGeneration
+        let previous = codexQuota
+        if previous.hasDisplayPayload {
+            codexQuota.refresh.status = .refreshing
+        } else {
+            codexQuota = .loading
+        }
         Task { [weak self] in
             guard let self else { return }
-            self.codexQuota = await self.quotaService.read()
+            let snapshot = await self.quotaService.read()
+            guard self.credentialVaultUnlocked, generation == self.quotaAccessGeneration else {
+                self.isRefreshingQuota = false
+                return
+            }
+            self.applyQuotaRefresh(snapshot, previous: previous, generation: generation)
             self.isRefreshingQuota = false
             self.evaluateQuotaState()
         }
@@ -476,19 +498,139 @@ final class MonitorStore: ObservableObject {
 
     func refreshWeather() {
         guard let location = weatherLocation else { weather = .unconfigured; return }
+        // A city change supersedes the in-flight request.  Without clearing
+        // this flag, the old request fails its generation/location guard and
+        // leaves `isRefreshingWeather` stuck true, blocking the new city.
+        if isRefreshingWeather, weatherReadLocationID != location.id {
+            weatherRefreshGeneration += 1
+            weatherReadTask?.cancel()
+            weatherReadTask = nil
+            weatherReadLocationID = nil
+            isRefreshingWeather = false
+        }
+        guard !isRefreshingWeather else { return }
         weatherRefreshGeneration += 1
         let generation = weatherRefreshGeneration
-        weatherReadTask?.cancel()
+        let previous = weather
         isRefreshingWeather = true
+        weatherReadLocationID = location.id
+        if weather.hasDisplayPayload {
+            weather.refresh.status = .refreshing
+        } else {
+            weather.state = .loading
+            weather.location = location
+            weather.message = "正在读取天气"
+            weather.refresh.status = .refreshing
+        }
         weatherReadTask = Task { [weak self] in
             guard let self else { return }
             let result = await self.weatherService.read(location: location)
-            guard !Task.isCancelled,
-                  generation == self.weatherRefreshGeneration,
-                  self.weatherLocation?.id == location.id else { return }
-            self.weather = result
+            guard generation == self.weatherRefreshGeneration else { return }
+            guard !Task.isCancelled, self.weatherLocation?.id == location.id else {
+                self.isRefreshingWeather = false
+                self.weatherReadTask = nil
+                self.weatherReadLocationID = nil
+                return
+            }
+            self.applyWeatherRefresh(result, previous: previous, generation: generation)
             self.isRefreshingWeather = false
             self.weatherReadTask = nil
+            self.weatherReadLocationID = nil
+        }
+    }
+
+    /// Applies a Codex read without allowing one transient process/network
+    /// failure to erase the last official local snapshot.
+    private func applyQuotaRefresh(_ fresh: QuotaSnapshot, previous: QuotaSnapshot, generation: Int) {
+        guard credentialVaultUnlocked, generation == quotaAccessGeneration else { return }
+        if fresh.state == .available {
+            var current = fresh
+            current.refresh = .fresh(at: fresh.updatedAt ?? Date())
+            codexQuota = current
+            quotaRetryTask?.cancel()
+            quotaRetryTask = nil
+            return
+        }
+
+        let failures = previous.refresh.failureCount + 1
+        var retained = fresh
+        if retained.copyDisplayPayload(from: previous) {
+            retained.refresh = RefreshMetadata(
+                status: .stale,
+                lastSuccessAt: previous.refresh.lastSuccessAt ?? previous.updatedAt,
+                lastFailureAt: Date(),
+                failureMessage: fresh.message,
+                failureCount: failures
+            )
+        } else {
+            retained.refresh = RefreshMetadata(
+                status: .initialFailure,
+                lastFailureAt: Date(),
+                failureMessage: fresh.message,
+                failureCount: failures
+            )
+        }
+        codexQuota = retained
+        scheduleQuotaRetry(afterFailureCount: failures, generation: generation)
+    }
+
+    private func scheduleQuotaRetry(afterFailureCount failures: Int, generation: Int) {
+        guard credentialVaultUnlocked, generation == quotaAccessGeneration else { return }
+        quotaRetryTask?.cancel()
+        let delay = RetryPolicy.delay(forFailureCount: failures)
+        codexQuota.refresh.nextRetryAt = Date().addingTimeInterval(delay)
+        quotaRetryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self, self.credentialVaultUnlocked,
+                  self.quotaAccessGeneration == generation else { return }
+            self.refreshQuota()
+        }
+    }
+
+    private func applyWeatherRefresh(_ fresh: WeatherSnapshot, previous: WeatherSnapshot, generation: Int) {
+        guard generation == weatherRefreshGeneration else { return }
+        if fresh.state == .available {
+            var current = fresh
+            current.refresh = .fresh(at: fresh.updatedAt ?? Date())
+            weather = current
+            weatherRetryTask?.cancel()
+            weatherRetryTask = nil
+            return
+        }
+
+        let failures = previous.refresh.failureCount + 1
+        var retained = fresh
+        if retained.copyDisplayPayload(from: previous) {
+            retained.state = .available
+            retained.refresh = RefreshMetadata(
+                status: .stale,
+                lastSuccessAt: previous.refresh.lastSuccessAt ?? previous.updatedAt,
+                lastFailureAt: Date(),
+                failureMessage: fresh.failure?.label ?? fresh.message,
+                failureCount: failures
+            )
+        } else {
+            retained.refresh = RefreshMetadata(
+                status: .initialFailure,
+                lastFailureAt: Date(),
+                failureMessage: fresh.failure?.label ?? fresh.message,
+                failureCount: failures
+            )
+        }
+        weather = retained
+        scheduleWeatherRetry(afterFailureCount: failures, generation: generation, locationID: fresh.location?.id)
+    }
+
+    private func scheduleWeatherRetry(afterFailureCount failures: Int, generation: Int, locationID: String?) {
+        weatherRetryTask?.cancel()
+        let delay = RetryPolicy.delay(forFailureCount: failures)
+        weather.refresh.nextRetryAt = Date().addingTimeInterval(delay)
+        weatherRetryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self,
+                  self.weatherRefreshGeneration == generation,
+                  self.weatherLocation?.id == locationID else { return }
+            self.refreshWeather()
         }
     }
 
@@ -498,14 +640,34 @@ final class MonitorStore: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             var report = await diagnosticService.diagnose()
-            let codex = await quotaService.read()
-            codexQuota = codex
-            let codexOK = codex.state == .available
-            report.checks.append(DiagnosticCheck(
-                id: "codex-service", title: "Codex 本地服务", state: codexOK ? .passed : .failed,
-                detail: codexOK ? "app-server 启动、认证和额度读取正常" : codex.message, latencyMS: nil
-            ))
-            if report.health == .healthy, !codexOK {
+            // A diagnostic never bypasses the vault: background/keyless
+            // startup must perform zero Codex reads until the user unlocks.
+            // When unlocked, reuse the governed refresh path (single-flight,
+            // generation guard, stale-value retention) rather than writing a
+            // second raw snapshot from the diagnostic task.
+            let codexCheck: DiagnosticCheck
+            if self.credentialVaultUnlocked {
+                let generation = self.quotaAccessGeneration
+                self.refreshQuota()
+                let snapshot = self.codexQuota
+                let codexOK = snapshot.hasDisplayPayload || snapshot.state == .available
+                codexCheck = DiagnosticCheck(
+                    id: "codex-service", title: "Codex 本地服务", state: codexOK ? .passed : .running,
+                    detail: codexOK ? "已使用受控额度刷新；显示最近有效快照" : "已安排受控额度读取；等待 app-server 初始化", latencyMS: nil
+                )
+                // A lock during network diagnosis changes the generation and
+                // intentionally leaves the diagnostic neutral instead of
+                // restoring or exposing an old quota result.
+                if generation != self.quotaAccessGeneration || !self.credentialVaultUnlocked {
+                    report.checks.append(DiagnosticCheck(id: "codex-service", title: "Codex 本地服务", state: .waiting, detail: "凭据保险库已锁定；未读取额度", latencyMS: nil))
+                } else {
+                    report.checks.append(codexCheck)
+                }
+            } else {
+                report.checks.append(DiagnosticCheck(id: "codex-service", title: "Codex 本地服务", state: .waiting, detail: "凭据保险库未解锁；未读取额度", latencyMS: nil))
+            }
+            let codexFailed = report.checks.last?.state == .failed
+            if report.health == .healthy, codexFailed {
                 report.health = .failed
                 report.summary = "网络正常，但 Codex 本地服务异常"
                 report.recommendation = "重启 ChatGPT/Codex 并确认已经登录；若仍失败，请更新或重新安装 Codex。"
@@ -517,8 +679,9 @@ final class MonitorStore: ObservableObject {
     }
 
     func refreshClashQuota() {
-        guard !isRefreshingClash else { return }
+        guard credentialVaultUnlocked, !isRefreshingClash else { return }
         isRefreshingClash = true
+        let generation = quotaAccessGeneration
         Task { [weak self] in
             guard let self else { return }
             // Local YAML parsing can finish within a single render pass. Yield
@@ -533,7 +696,7 @@ final class MonitorStore: ObservableObject {
             } else {
                 self.clashSyncEvidence = "控制器同步未启用，仅重读本地订阅元数据"
             }
-            await self.refreshClashQuotaAsync()
+            await self.refreshClashQuotaAsync(expectedGeneration: generation)
             try? await Task.sleep(for: .milliseconds(450))
             self.isRefreshingClash = false
         }
@@ -576,13 +739,19 @@ final class MonitorStore: ObservableObject {
             credentialVault = vault
             applyCredentialVault()
             credentialVaultUnlocked = true
+            quotaAccessGeneration += 1
             credentialVaultStatus = "已解锁；本次运行只读取一次统一保险库"
+            refreshClashQuota()
+            refreshQuota()
             refreshAPIConnectors()
         case .missing:
             credentialVault = CredentialVault()
             applyCredentialVault()
             credentialVaultUnlocked = true
+            quotaAccessGeneration += 1
             credentialVaultStatus = "新保险库已解锁；旧版分散凭据不会自动读取"
+            refreshClashQuota()
+            refreshQuota()
             refreshAPIConnectors()
         case .interactionRequired:
             credentialVaultStatus = "钥匙串未允许读取；可在钥匙串访问中删除旧 PulseDock 项目后重新保存"
@@ -604,6 +773,23 @@ final class MonitorStore: ObservableObject {
     }
 
     func lockCredentialVault() {
+        // All quota sources share the same explicit session gate, including
+        // local Codex/Cursor/Clash readers. No amount remains visible before
+        // the user unlocks once during this launch.
+        quotaAccessGeneration += 1
+        quotaRetryTask?.cancel()
+        quotaRetryTask = nil
+        apiConnectorRetryTasks.values.forEach { $0.cancel() }
+        apiConnectorRetryTasks.removeAll()
+        for connector in apiConnectors {
+            apiConnectorRefreshGeneration[connector.id, default: 0] += 1
+            apiConnectorSnapshots[connector.id] = waitingUnlockSnapshot(id: connector.id, previous: nil)
+        }
+        codexQuota = .locked
+        clashQuota = .locked
+        clashSubscriptions = []
+        isRefreshingQuota = false
+        isRefreshingClash = false
         credentialVault = CredentialVault()
         apiConnectorKeyCache.removeAll()
         clashControllerSecret = ""
@@ -760,6 +946,64 @@ final class MonitorStore: ObservableObject {
         }.map(\.element)
     }
 
+    /// One unified *presentation* list. Sources keep their own refresh and
+    /// units; this deliberately never sums or averages provider percentages.
+    var quotaPresentations: [QuotaPresentation] {
+        guard credentialVaultUnlocked else { return [] }
+        return orderedAPIConnectors.filter(\.enabled).map { connector in
+            if connector.kind == .codexLocalQuota {
+                return QuotaPresentation.codex(id: connector.id, snapshot: codexQuota, isRefreshing: isRefreshingQuota, now: now)
+            }
+            return QuotaPresentation.connector(
+                connector,
+                snapshot: apiConnectorSnapshots[connector.id] ?? APIConnectorSnapshot(id: connector.id),
+                now: now,
+                isRefreshing: isRefreshingAPIConnectors || apiConnectorSnapshots[connector.id]?.state == .loading
+            )
+        }
+    }
+
+    var dashboardQuotaPresentations: [QuotaPresentation] {
+        quotaPresentations.filter { presentation in
+            apiConnectors.first(where: { $0.id == presentation.id })?.showOnDashboard == true
+        }
+    }
+
+    var compactPinnedQuotaPresentation: QuotaPresentation? {
+        quotaPresentations.first { presentation in
+            apiConnectors.first(where: { $0.id == presentation.id })?.pinned == true
+        }
+    }
+
+    func quotaPresentation(for connector: APIConnectorConfiguration) -> QuotaPresentation {
+        if connector.kind == .codexLocalQuota {
+            return .codex(id: connector.id, snapshot: codexQuota, isRefreshing: isRefreshingQuota, now: now)
+        }
+        let snapshot = apiConnectorSnapshots[connector.id] ?? APIConnectorSnapshot(id: connector.id)
+        return .connector(connector, snapshot: snapshot, now: now, isRefreshing: isRefreshingAPIConnectors || snapshot.state == .loading)
+    }
+
+    func apiConnectorSnapshot(for connector: APIConnectorConfiguration) -> APIConnectorSnapshot {
+        guard credentialVaultUnlocked else {
+            return APIConnectorSnapshot(id: connector.id, state: .waitingUnlock, message: "解锁凭据保险库后读取额度")
+        }
+        guard connector.kind == .codexLocalQuota else {
+            return apiConnectorSnapshots[connector.id] ?? APIConnectorSnapshot(id: connector.id)
+        }
+        let windows = codexQuota.windows.map {
+            APIUsageWindow(id: $0.id, title: $0.title, windowNumber: nil, usedPercent: $0.usedPercent, resetAt: $0.resetLabel)
+        }
+        return APIConnectorSnapshot(
+            id: connector.id,
+            state: codexQuota.state,
+            remainingTokens: codexQuota.riskRemainingLabel,
+            resetAt: codexQuota.resetDateTimeLabel,
+            updatedAt: codexQuota.updatedAt,
+            message: "Codex 官方本机 app-server（只读，不使用 API Key）",
+            usageWindows: windows
+        )
+    }
+
     func addRemoteDevice() {
         let alias = newRemoteAlias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard SSHMonitorService.validAlias(alias), !remoteDevices.contains(where: { $0.sshAlias == alias }) else { return }
@@ -897,6 +1141,7 @@ final class MonitorStore: ObservableObject {
         let name = newAPIConnectorName.trimmingCharacters(in: .whitespacesAndNewlines)
         let endpoint = newAPIConnectorKind == .cursorLocalUsage ? newAPIConnectorKind.defaultEndpoint : newAPIConnectorEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty,
+              !newAPIConnectorKind.isBuiltInSingleton,
               (newAPIConnectorKind == .cursorLocalUsage || URL(string: endpoint)?.scheme == "https") else { return }
         let connector = APIConnectorConfiguration(name: name, kind: newAPIConnectorKind, endpoint: endpoint, sortOrder: apiConnectors.count)
         apiConnectors.append(connector)
@@ -920,6 +1165,7 @@ final class MonitorStore: ObservableObject {
     }
 
     func removeAPIConnector(_ id: UUID) {
+        guard apiConnectors.first(where: { $0.id == id })?.kind.isBuiltInSingleton != true else { return }
         apiConnectors.removeAll { $0.id == id }; apiConnectorSnapshots[id] = nil
         apiConnectorKeyCache[id] = nil
         if credentialVaultUnlocked {
@@ -930,8 +1176,15 @@ final class MonitorStore: ObservableObject {
 
     func toggleAPIConnectorPinned(_ id: UUID) {
         guard let index = apiConnectors.firstIndex(where: { $0.id == id }) else { return }
-        apiConnectors[index].pinned.toggle()
+        let willPin = !apiConnectors[index].pinned
+        for item in apiConnectors.indices { apiConnectors[item].pinned = false }
+        apiConnectors[index].pinned = willPin
         normalizeAPIConnectorOrder()
+    }
+
+    func toggleAPIConnectorDashboard(_ id: UUID) {
+        guard let index = apiConnectors.firstIndex(where: { $0.id == id }) else { return }
+        apiConnectors[index].showOnDashboard.toggle()
     }
 
     func moveAPIConnector(_ id: UUID, direction: Int) {
@@ -957,13 +1210,20 @@ final class MonitorStore: ObservableObject {
     func refreshAPIConnectors(unlockCredentials: Bool = false) { Task { [weak self] in await self?.refreshAPIConnectorsAsync(unlockCredentials: unlockCredentials) } }
 
     func refreshAPIConnector(_ id: UUID) {
+        guard credentialVaultUnlocked else { return }
         guard let connector = apiConnectors.first(where: { $0.id == id }) else { return }
+        if connector.kind == .codexLocalQuota {
+            refreshQuota()
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             let key: String
             if connector.kind.requiresAPIKey {
                 guard let saved = self.apiConnectorKeyCache[id], !saved.isEmpty else {
-                    self.apiConnectorSnapshots[id] = APIConnectorSnapshot(id: id, state: .unavailable, updatedAt: Date(), message: self.credentialVaultUnlocked ? "未保存 API Key；填写后点击“保存全部变更”" : "凭据保险库已锁定；解锁一次后可刷新")
+                    self.apiConnectorSnapshots[id] = self.credentialVaultUnlocked
+                        ? APIConnectorSnapshot(id: id, state: .unavailable, updatedAt: Date(), message: "未保存 API Key；填写后点击“保存全部变更")
+                        : self.waitingUnlockSnapshot(id: id, previous: self.apiConnectorSnapshots[id])
                     return
                 }
                 key = saved
@@ -971,9 +1231,13 @@ final class MonitorStore: ObservableObject {
                 key = ""
             }
             let previous = self.apiConnectorSnapshots[id]
-            self.apiConnectorSnapshots[id] = APIConnectorSnapshot(id: id, state: .loading, message: "正在刷新…")
+            let generation = self.beginAPIConnectorRefresh(id: id)
             let fresh = await self.apiConnectorService.probe(connector, apiKey: key)
-            self.apiConnectorSnapshots[id] = self.snapshotPreservingLastSuccess(fresh, previous: previous)
+            // A lock may happen while this read-only probe is in flight. Its
+            // result must never restore a key-backed source to fresh/failed.
+            guard self.apiConnectorRefreshGeneration[id] == generation,
+                  !connector.kind.requiresAPIKey || self.credentialVaultUnlocked else { return }
+            self.applyAPIConnectorRefresh(fresh, previous: previous, connector: connector, generation: generation)
         }
     }
 
@@ -1006,7 +1270,8 @@ final class MonitorStore: ObservableObject {
         clashControllerEnabled = bundle.clashControllerEnabled; clashControllerURL = bundle.clashControllerURL
         alertCooldownMinutes = bundle.alertCooldownMinutes
         eventLedger.append(category: .system, severity: .info, title: "配置已导入", evidence: bundle.note, source: "本地 JSON 配置")
-        timelineEvents = eventLedger.events; refreshRemoteDevices(); refreshAPIConnectors()
+        timelineEvents = eventLedger.events; refreshRemoteDevices()
+        if credentialVaultUnlocked { refreshAPIConnectors() }
     }
 
     func chooseClashMetadataFile() {
@@ -1016,7 +1281,7 @@ final class MonitorStore: ObservableObject {
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         UserDefaults.standard.set(url.path, forKey: PreferenceKey.customClashPath)
-        refreshClashQuota()
+        if credentialVaultUnlocked { refreshClashQuota() }
     }
 
     func togglePomodoro() {
@@ -1103,6 +1368,7 @@ final class MonitorStore: ObservableObject {
     }
     var codexFreshnessLabel: String { DataFreshness.label(codexQuota.updatedAt, now: now) }
     var clashFreshnessLabel: String { DataFreshness.label(clashQuota.updatedAt, now: now) }
+    var ipFreshnessLabel: String { DataFreshness.label(lastIPUpdate, now: now) }
     var weatherFreshnessLabel: String { DataFreshness.label(weather.updatedAt, now: now) }
     var diagnosticFreshnessLabel: String { DataFreshness.label(diagnosticReport.completedAt, now: now) }
 
@@ -1123,6 +1389,12 @@ final class MonitorStore: ObservableObject {
         let report = "PulseDock AI 网络诊断\n结论：\(diagnosticReport.summary)\n建议：\(diagnosticReport.recommendation)\n完成时间：\(diagnosticReport.completedAt?.formatted(date: .numeric, time: .standard) ?? "未完成")\n\n\(rows)"
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(report, forType: .string)
+    }
+
+    func copyIPAddress() {
+        guard ip.address != "--" else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(ip.address, forType: .string)
     }
     var activitySuggestion: String? {
         guard activeApplication.isTrackable, activeApplication.isEngaged,
@@ -1375,12 +1647,18 @@ final class MonitorStore: ObservableObject {
     }
 
     private func refreshAPIConnectorsAsync(unlockCredentials: Bool = false) async {
-        guard !isRefreshingAPIConnectors else { return }
+        guard credentialVaultUnlocked, !isRefreshingAPIConnectors else { return }
         let enabled = apiConnectors.filter(\.enabled)
         guard !enabled.isEmpty else { return }
         isRefreshingAPIConnectors = true
-        await withTaskGroup(of: APIConnectorSnapshot.self) { group in
+        await withTaskGroup(of: (APIConnectorSnapshot, Int, APIConnectorSnapshot?).self) { group in
             for connector in enabled {
+                if connector.kind == .codexLocalQuota {
+                    // Codex is adapted from the single existing official
+                    // local reader. Never route it through APIConnectorService.
+                    refreshQuota()
+                    continue
+                }
                 let key: String
                 if !connector.kind.requiresAPIKey {
                     // Cursor reads its own local session and must never be blocked
@@ -1389,34 +1667,114 @@ final class MonitorStore: ObservableObject {
                 } else if let cached = apiConnectorKeyCache[connector.id] {
                     key = cached
                 } else {
-                    apiConnectorSnapshots[connector.id] = APIConnectorSnapshot(id: connector.id, state: .unavailable, updatedAt: Date(), message: credentialVaultUnlocked ? "未保存 API Key；在统一凭据保险库解锁后重新填写并保存" : "凭据保险库已锁定；解锁一次后可刷新全部连接器")
+                    apiConnectorSnapshots[connector.id] = credentialVaultUnlocked
+                        ? APIConnectorSnapshot(id: connector.id, state: .unavailable, updatedAt: Date(), message: "未保存 API Key；在统一凭据保险库解锁后重新填写并保存")
+                        : waitingUnlockSnapshot(id: connector.id, previous: apiConnectorSnapshots[connector.id])
                     continue
                 }
-                group.addTask { await self.apiConnectorService.probe(connector, apiKey: key) }
+                let previous = apiConnectorSnapshots[connector.id]
+                let generation = beginAPIConnectorRefresh(id: connector.id)
+                group.addTask { (await self.apiConnectorService.probe(connector, apiKey: key), generation, previous) }
             }
-            for await snapshot in group {
-                apiConnectorSnapshots[snapshot.id] = snapshotPreservingLastSuccess(snapshot, previous: apiConnectorSnapshots[snapshot.id])
+            for await (snapshot, generation, previous) in group {
+                guard let connector = apiConnectors.first(where: { $0.id == snapshot.id }),
+                      apiConnectorRefreshGeneration[snapshot.id] == generation,
+                      !connector.kind.requiresAPIKey || credentialVaultUnlocked else { continue }
+                applyAPIConnectorRefresh(snapshot, previous: previous, connector: connector, generation: generation)
             }
         }
         isRefreshingAPIConnectors = false
     }
 
-    private func snapshotPreservingLastSuccess(_ fresh: APIConnectorSnapshot, previous: APIConnectorSnapshot?) -> APIConnectorSnapshot {
-        guard fresh.state != .available, fresh.usageWindows.isEmpty,
-              let previous, previous.state == .available, !previous.usageWindows.isEmpty else { return fresh }
+    private func applyAPIConnectorRefresh(_ fresh: APIConnectorSnapshot, previous: APIConnectorSnapshot?, connector: APIConnectorConfiguration, generation: Int) {
+        guard apiConnectorRefreshGeneration[connector.id] == generation,
+              !connector.kind.requiresAPIKey || credentialVaultUnlocked else { return }
+        if fresh.state == .available {
+            var current = fresh
+            current.refresh = .fresh(at: fresh.updatedAt ?? Date())
+            apiConnectorSnapshots[connector.id] = current
+            apiConnectorRetryTasks[connector.id]?.cancel()
+            apiConnectorRetryTasks[connector.id] = nil
+            return
+        }
+
+        let failures = (previous?.refresh.failureCount ?? 0) + 1
         var retained = fresh
-        retained.usageWindows = previous.usageWindows
-        retained.remainingRequests = previous.remainingRequests
-        retained.remainingTokens = previous.remainingTokens
-        retained.resetAt = previous.resetAt
-        retained.message = "\(fresh.message) · 显示上次成功快照"
-        return retained
+        if let previous, retained.copyDisplayPayload(from: previous) {
+            retained.refresh = RefreshMetadata(
+                status: .stale,
+                lastSuccessAt: previous.refresh.lastSuccessAt ?? previous.updatedAt,
+                lastFailureAt: Date(),
+                failureMessage: fresh.message,
+                failureCount: failures
+            )
+        } else {
+            retained.refresh = RefreshMetadata(
+                status: .initialFailure,
+                lastFailureAt: Date(),
+                failureMessage: fresh.message,
+                failureCount: failures
+            )
+        }
+        apiConnectorSnapshots[connector.id] = retained
+        guard isRetryableConnectorFailure(fresh, connector: connector) else { return }
+        scheduleAPIConnectorRetry(connector, afterFailureCount: failures, generation: generation)
     }
 
-    private func refreshClashQuotaAsync() async {
+    private func isRetryableConnectorFailure(_ snapshot: APIConnectorSnapshot, connector: APIConnectorConfiguration) -> Bool {
+        guard connector.enabled else { return false }
+        let nonRetryable = ["未保存 API Key", "请填写", "仅允许 HTTPS", "仅允许 open.bigmodel.cn", "仅允许 api.deepseek.com"]
+        return !nonRetryable.contains { snapshot.message.contains($0) }
+    }
+
+    private func scheduleAPIConnectorRetry(_ connector: APIConnectorConfiguration, afterFailureCount failures: Int, generation: Int) {
+        apiConnectorRetryTasks[connector.id]?.cancel()
+        let delay = RetryPolicy.delay(forFailureCount: failures)
+        apiConnectorSnapshots[connector.id]?.refresh.nextRetryAt = Date().addingTimeInterval(delay)
+        let accessGeneration = quotaAccessGeneration
+        apiConnectorRetryTasks[connector.id] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self,
+                  self.credentialVaultUnlocked,
+                  self.quotaAccessGeneration == accessGeneration,
+                  self.apiConnectorRefreshGeneration[connector.id] == generation else { return }
+            self.refreshAPIConnector(connector.id)
+        }
+    }
+
+    private func waitingUnlockSnapshot(id: UUID, previous: APIConnectorSnapshot?) -> APIConnectorSnapshot {
+        var waiting = APIConnectorSnapshot(id: id, state: .waitingUnlock, message: "等待解锁凭据保险库；未发起网络请求")
+        waiting.refresh = .waitingUnlock
+        if let previous, waiting.copyDisplayPayload(from: previous) {
+            waiting.message = "等待解锁凭据保险库；显示上次成功快照"
+            waiting.refresh = previous.refresh
+            waiting.refresh.status = .waitingUnlock
+        }
+        return waiting
+    }
+
+    private func beginAPIConnectorRefresh(id: UUID) -> Int {
+        let generation = apiConnectorRefreshGeneration[id, default: 0] + 1
+        apiConnectorRefreshGeneration[id] = generation
+        var loading = APIConnectorSnapshot(id: id, state: .loading, message: "正在刷新…")
+        if let previous = apiConnectorSnapshots[id], loading.copyDisplayPayload(from: previous) {
+            loading.message = "正在刷新 · 显示上次成功快照"
+            loading.refresh = previous.refresh
+            loading.refresh.status = .refreshing
+        } else {
+            loading.refresh.status = .refreshing
+        }
+        apiConnectorSnapshots[id] = loading
+        return generation
+    }
+
+    private func refreshClashQuotaAsync(expectedGeneration: Int? = nil) async {
+        guard credentialVaultUnlocked else { return }
+        let generation = expectedGeneration ?? quotaAccessGeneration
         let custom = UserDefaults.standard.string(forKey: PreferenceKey.customClashPath).map { URL(fileURLWithPath: $0) }
         let local = await clashService.discover(customURL: custom)
         let live = clashControllerEnabled ? await clashControllerService.providerUsage(baseURL: clashControllerURL, secret: clashControllerSecret) : []
+        guard credentialVaultUnlocked, generation == quotaAccessGeneration else { return }
         var merged = live
         var knownNames = Set(live.map { $0.name })
         merged.append(contentsOf: local.filter { knownNames.insert($0.name).inserted })
@@ -1425,6 +1783,10 @@ final class MonitorStore: ObservableObject {
     }
 
     private func applySelectedClash() {
+        guard credentialVaultUnlocked else {
+            clashQuota = .locked
+            return
+        }
         if let selected = clashSubscriptions.first(where: { $0.identifier == selectedClashIdentifier }) { clashQuota = selected }
         else if let first = clashSubscriptions.first { clashQuota = first; selectedClashIdentifier = first.identifier }
         else { clashQuota = ClashQuotaService.parse(url: ClashQuotaService.profilesURL) }
@@ -1571,18 +1933,7 @@ final class MonitorStore: ObservableObject {
     }
 
     private static func sanitizeAPIConfigurations(_ values: [APIConnectorConfiguration]) -> [APIConnectorConfiguration] {
-        var seen = Set<UUID>()
-        return values.enumerated().map { offset, raw in
-            var value = raw
-            if !seen.insert(value.id).inserted {
-                value.id = UUID()
-                seen.insert(value.id)
-            }
-            if value.sortOrder < 0 { value.sortOrder = offset }
-            value.name = String(value.name.prefix(120))
-            value.endpoint = String(value.endpoint.prefix(2_048))
-            return value
-        }
+        APIConnectorConfiguration.sanitizeForStorage(values)
     }
 
     private func resetPomodoroIfIdle() { if pomodoroPhase == .idle { pomodoroSecondsRemaining = focusMinutes * 60 } }

@@ -134,10 +134,16 @@ actor RemoteNetworkScopeService {
         hasPrivateTarget && tcpReachable
     }
 
-    nonisolated static func permitsSpecificPhysicalRoute(destination: String, interface: String, activeInterfaces: Set<String>) -> Bool {
-        destination.lowercased() != "default"
+    nonisolated static func permitsSpecificPhysicalRoute(destination: String, interface: String, activeInterfaces: Set<String>, flags: String = "") -> Bool {
+        let normalizedFlags = flags.uppercased()
+        return destination.lowercased() != "default"
             && destination != "0.0.0.0"
             && activeInterfaces.contains(interface)
+            // macOS can clone a host route from the default gateway. That
+            // route only says "send it to the gateway" and is not evidence
+            // that a private robot/office network is nearby.
+            && !normalizedFlags.contains("WASCLONED")
+            && !normalizedFlags.contains("CLONING")
     }
 
     nonisolated static func parseIPv4(_ value: String) -> UInt32? {
@@ -181,7 +187,8 @@ actor RemoteNetworkScopeService {
         return permitsSpecificPhysicalRoute(
             destination: destination,
             interface: interface,
-            activeInterfaces: Set(activeLocalNetworks().map(\.name))
+            activeInterfaces: Set(activeLocalNetworks().map(\.name)),
+            flags: fields["flags"] ?? ""
         )
     }
 

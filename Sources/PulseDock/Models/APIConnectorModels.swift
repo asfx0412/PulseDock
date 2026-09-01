@@ -2,6 +2,10 @@ import Foundation
 import SwiftUI
 
 enum APIConnectorKind: String, Codable, CaseIterable, Sendable {
+    /// The one built-in Codex source is a presentation adapter over the
+    /// existing official local app-server reader. It is not an API-key
+    /// connector and must never trigger a second read of that service.
+    case codexLocalQuota
     case customRateLimit
     case glmCodingPlan
     case deepSeekBalance
@@ -9,6 +13,7 @@ enum APIConnectorKind: String, Codable, CaseIterable, Sendable {
 
     var label: String {
         switch self {
+        case .codexLocalQuota: "Codex 本机官方额度"
         case .customRateLimit: "通用 Rate Limit"
         case .glmCodingPlan: "GLM Coding Plan 用量"
         case .deepSeekBalance: "DeepSeek 账户余额"
@@ -16,9 +21,18 @@ enum APIConnectorKind: String, Codable, CaseIterable, Sendable {
         }
     }
 
-    var requiresAPIKey: Bool { self != .cursorLocalUsage }
+    var requiresAPIKey: Bool {
+        switch self {
+        case .codexLocalQuota, .cursorLocalUsage: false
+        case .customRateLimit, .glmCodingPlan, .deepSeekBalance: true
+        }
+    }
+
+    var isBuiltInSingleton: Bool { self == .codexLocalQuota }
+
     var defaultEndpoint: String {
         switch self {
+        case .codexLocalQuota: "Codex 官方本机 app-server（只读）"
         case .customRateLimit: ""
         case .glmCodingPlan: "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
         case .deepSeekBalance: "https://api.deepseek.com/user/balance"
@@ -28,18 +42,88 @@ enum APIConnectorKind: String, Codable, CaseIterable, Sendable {
 }
 
 struct APIConnectorConfiguration: Identifiable, Codable, Sendable, Equatable {
+    /// Stable across launches/configuration imports so the built-in source
+    /// cannot multiply and never has a Keychain credential attached to it.
+    static let codexLocalID = UUID(uuidString: "9E5A9B55-90D7-4C4B-BD4B-4C92D971D908")!
+
     var id = UUID()
     var name: String
     var kind: APIConnectorKind = .customRateLimit
     var endpoint: String
     var enabled = true
+    /// Multiple sources may be visible in the expanded Workbench.
+    var showOnDashboard = false
+    /// Exactly zero or one source may be pinned into the compact panel.
     var pinned = false
     var sortOrder = 0
 
-    enum CodingKeys: String, CodingKey { case id, name, kind, endpoint, enabled, pinned, sortOrder }
+    enum CodingKeys: String, CodingKey { case id, name, kind, endpoint, enabled, showOnDashboard, pinned, sortOrder }
 
-    init(id: UUID = UUID(), name: String, kind: APIConnectorKind = .customRateLimit, endpoint: String, enabled: Bool = true, pinned: Bool = false, sortOrder: Int = 0) {
-        self.id = id; self.name = name; self.kind = kind; self.endpoint = endpoint; self.enabled = enabled; self.pinned = pinned; self.sortOrder = sortOrder
+    init(id: UUID = UUID(), name: String, kind: APIConnectorKind = .customRateLimit, endpoint: String, enabled: Bool = true, showOnDashboard: Bool = false, pinned: Bool = false, sortOrder: Int = 0) {
+        self.id = id; self.name = name; self.kind = kind; self.endpoint = endpoint; self.enabled = enabled; self.showOnDashboard = showOnDashboard; self.pinned = pinned; self.sortOrder = sortOrder
+    }
+
+    static var codexLocalDefault: APIConnectorConfiguration {
+        APIConnectorConfiguration(
+            id: codexLocalID,
+            name: "Codex",
+            kind: .codexLocalQuota,
+            endpoint: APIConnectorKind.codexLocalQuota.defaultEndpoint,
+            enabled: true,
+            showOnDashboard: true,
+            pinned: true,
+            sortOrder: 0
+        )
+    }
+
+    /// Sanitizes imported/persisted connector lists while reserving the
+    /// built-in Codex id. The result contains exactly one Codex source and no
+    /// duplicate ids, even if an older build or an imported config assigned
+    /// the reserved id to an ordinary connector.
+    static func sanitizeForStorage(_ values: [APIConnectorConfiguration]) -> [APIConnectorConfiguration] {
+        var seen: Set<UUID> = [codexLocalID]
+        var codex: APIConnectorConfiguration?
+        var sanitized: [APIConnectorConfiguration] = []
+        for (offset, raw) in values.enumerated() {
+            var value = raw
+            if value.kind == .codexLocalQuota {
+                if codex == nil {
+                    value.id = codexLocalID
+                    value.name = "Codex"
+                    value.endpoint = APIConnectorKind.codexLocalQuota.defaultEndpoint
+                    codex = value
+                }
+                continue
+            }
+            if !seen.insert(value.id).inserted {
+                repeat { value.id = UUID() } while !seen.insert(value.id).inserted
+            }
+            if value.sortOrder < 0 { value.sortOrder = offset }
+            value.name = String(value.name.prefix(120))
+            value.endpoint = String(value.endpoint.prefix(2_048))
+            sanitized.append(value)
+        }
+        var builtIn = codex ?? codexLocalDefault
+        builtIn.id = codexLocalID
+        builtIn.kind = .codexLocalQuota
+        builtIn.name = "Codex"
+        builtIn.endpoint = APIConnectorKind.codexLocalQuota.defaultEndpoint
+        if codex == nil { builtIn.sortOrder = 0 }
+        sanitized.append(builtIn)
+        // 6.13.0 used `pinned` for both the Workbench and compact panel. Keep
+        // those sources visible on migration, but retain only the first user
+        // ordered source as the one compact-panel pin.
+        let compactPin = sanitized.enumerated()
+            .filter { $0.element.pinned }
+            .min { lhs, rhs in
+                if lhs.element.sortOrder != rhs.element.sortOrder { return lhs.element.sortOrder < rhs.element.sortOrder }
+                return lhs.offset < rhs.offset
+            }?.element.id
+        for index in sanitized.indices {
+            if sanitized[index].pinned { sanitized[index].showOnDashboard = true }
+            sanitized[index].pinned = sanitized[index].id == compactPin
+        }
+        return sanitized
     }
 
     init(from decoder: Decoder) throws {
@@ -50,6 +134,7 @@ struct APIConnectorConfiguration: Identifiable, Codable, Sendable, Equatable {
         endpoint = try c.decode(String.self, forKey: .endpoint)
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+        showOnDashboard = try c.decodeIfPresent(Bool.self, forKey: .showOnDashboard) ?? pinned
         sortOrder = try c.decodeIfPresent(Int.self, forKey: .sortOrder) ?? 0
     }
 }
@@ -74,7 +159,37 @@ struct APIConnectorSnapshot: Identifiable, Sendable, Equatable {
     var updatedAt: Date?
     var message = "等待检测"
     var usageWindows: [APIUsageWindow] = []
+    var refresh = RefreshMetadata()
+    /// The provider's own aggregate remaining percentage, when it exposes
+    /// one.  This is a presentation hint only; it is never combined with
+    /// independent windows from other providers.
+    var primaryRemainingPercent: Double? = nil
+
+    /// Values that may safely remain visible while a refresh or credential
+    /// transition is in progress. State/message are deliberately excluded:
+    /// callers must always label retained data as stale or waiting.
+    var hasDisplayPayload: Bool {
+        !usageWindows.isEmpty || remainingRequests != nil || remainingTokens != nil
+    }
+
+    @discardableResult
+    mutating func copyDisplayPayload(from previous: APIConnectorSnapshot) -> Bool {
+        guard previous.hasDisplayPayload else { return false }
+        remainingRequests = previous.remainingRequests
+        remainingTokens = previous.remainingTokens
+        resetAt = previous.resetAt
+        updatedAt = previous.updatedAt
+        usageWindows = previous.usageWindows
+        primaryRemainingPercent = previous.primaryRemainingPercent
+        return true
+    }
 
     var summary: String { usageWindows.isEmpty ? (remainingTokens ?? remainingRequests ?? "--") : "\(usageWindows.count) 个额度周期" }
-    var color: Color { state == .available ? .green : state == .loading ? .secondary : .orange }
+    var color: Color {
+        switch state {
+        case .available: .green
+        case .loading, .waitingUnlock: .secondary
+        case .unavailable, .error: .orange
+        }
+    }
 }

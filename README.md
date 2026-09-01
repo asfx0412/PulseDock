@@ -11,7 +11,7 @@
 <p align="center"><a href="README.md">简体中文</a> | <a href="README.en.md">English</a></p>
 
 <p align="center">
-  <a href="https://github.com/asfx0412/PulseDock/releases"><img alt="Version" src="https://img.shields.io/badge/version-6.12.3-2f80ed"></a>
+  <a href="https://github.com/asfx0412/PulseDock/releases"><img alt="Version" src="https://img.shields.io/badge/version-6.14.0-2f80ed"></a>
   <img alt="Platform" src="https://img.shields.io/badge/macOS-26%2B-black">
   <img alt="Architecture" src="https://img.shields.io/badge/Apple%20Silicon-arm64-8a2be2">
   <img alt="Swift" src="https://img.shields.io/badge/Swift-6.2-f05138">
@@ -19,7 +19,7 @@
 
 PulseDock 将 AI 网络健康、Codex 额度、Clash 用量、SSH/GPU 设备、应用活跃度、番茄钟、天气、工作日历和专注声音集中在一个低干扰浮窗中。数据尽量在本机处理，秘密保存在 macOS Keychain，不会写入仓库或导出配置。
 
-> 当前版本：**6.12.3**。安装包面向 Apple Silicon 和 macOS 26。当前使用 ad-hoc 签名，尚未提供 Developer ID 公证和自动更新。
+> 当前版本：**6.14.0**。安装包面向 Apple Silicon 和 macOS 26。更新器会校验 GitHub Release 清单的 Ed25519 签名、SHA-256、Bundle ID、版本、arm64 与代码签名；仍为 ad-hoc 签名，首次运行可能出现 Gatekeeper 提示。
 
 ## 界面预览
 
@@ -84,7 +84,7 @@ chmod +x scripts/test.sh scripts/build.sh
 open outputs/PulseDock.app
 ```
 
-构建脚本生成 `outputs/PulseDock.app` 和 `outputs/PulseDock-6.12.3.zip`，但目前只进行 ad-hoc 本地签名。完整发布仍需 Developer ID 签名和 Apple 公证。
+构建脚本生成 `outputs/PulseDock.app` 和 `outputs/PulseDock-6.14.0.zip`，并执行签名、arm64 与解包验证。GitHub Release 发布还需要配置仅在 GitHub Actions 使用的更新私钥；完整发布仍未具备 Developer ID 签名和 Apple 公证。
 
 ## 首次配置
 
@@ -202,7 +202,7 @@ PulseDock 优先读取 Clash Verge/Mihomo 在本机已保存的兼容订阅元�
 
 - 只构建和测试 Apple Silicon + macOS 26；
 - 安装包尚未公证，首次打开需要用户明确确认；
-- 无自动更新；
+- 自动更新只会在 GitHub Actions 的签名清单、私钥 Secret、发布构建与旧版到新版真实升级测试都完成后启用；若其中任一验证失败，应用会拒绝安装。
 - Cursor 个人额度依赖本机非公开内部接口，上游字段变化时会明确降级；
 - Radio Browser 是第三方目录，不保证所有音源在每个地区都可用。
 

@@ -32,18 +32,21 @@ compile_and_run responsiveness \
 
 compile_and_run formatting \
   work/Version65FormattingSelfTest.swift \
+  Sources/PulseDock/Models/RefreshModels.swift \
   Sources/PulseDock/Models/MonitorModels.swift \
   Sources/PulseDock/Models/ProductivityModels.swift \
   Sources/PulseDock/Models/WeatherModels.swift
 
 compile_and_run insight_holiday \
   work/Version68InsightSelfTest.swift \
+  Sources/PulseDock/Models/RefreshModels.swift \
   Sources/PulseDock/Models/ProductivityModels.swift \
   Sources/PulseDock/Models/QuotaModels.swift \
   Sources/PulseDock/Models/InsightModels.swift
 
 compile_and_run quota_media \
   work/Version65QuotaMediaSelfTest.swift \
+  Sources/PulseDock/Models/RefreshModels.swift \
   Sources/PulseDock/Models/QuotaModels.swift \
   Sources/PulseDock/Models/MediaModels.swift \
   Sources/PulseDock/Services/CodexQuotaService.swift \
@@ -60,6 +63,7 @@ compile_and_run audio_policy \
 compile_and_run feature_612 \
   work/Version612FeatureSelfTest.swift \
   Sources/PulseDock/App/GlobalHotKeyManager.swift \
+  Sources/PulseDock/Models/RefreshModels.swift \
   Sources/PulseDock/Models/WeatherModels.swift \
   Sources/PulseDock/Services/AudioStreamPreflightService.swift
 
@@ -71,6 +75,7 @@ compile_and_run remote \
 
 compile_and_run ledger \
   work/Version6SelfTest.swift \
+  Sources/PulseDock/Models/RefreshModels.swift \
   Sources/PulseDock/Models/RemoteModels.swift \
   Sources/PulseDock/Models/ConfigurationModels.swift \
   Sources/PulseDock/Models/EventModels.swift \
@@ -80,10 +85,32 @@ compile_and_run ledger \
 
 compile_and_run connector \
   work/Version62ConnectorSelfTest.swift \
+  Sources/PulseDock/Models/RefreshModels.swift \
   Sources/PulseDock/Models/APIConnectorModels.swift \
   Sources/PulseDock/Models/QuotaModels.swift \
   Sources/PulseDock/Services/CursorUsageService.swift \
   Sources/PulseDock/Services/APIConnectorService.swift
+
+compile_and_run quota_presentation \
+  work/Version613QuotaPresentationSelfTest.swift \
+  Sources/PulseDock/Models/RefreshModels.swift \
+  Sources/PulseDock/Models/MonitorModels.swift \
+  Sources/PulseDock/Models/APIConnectorModels.swift \
+  Sources/PulseDock/Models/QuotaModels.swift \
+  Sources/PulseDock/Models/QuotaPresentation.swift
+
+compile_and_run reliability_614 \
+  work/Version614ReliabilitySelfTest.swift \
+  Sources/PulseDock/Models/RefreshModels.swift \
+  Sources/PulseDock/Models/MonitorModels.swift \
+  Sources/PulseDock/Models/WeatherModels.swift \
+  Sources/PulseDock/Models/APIConnectorModels.swift \
+  Sources/PulseDock/Models/QuotaModels.swift \
+  Sources/PulseDock/Models/QuotaPresentation.swift
+
+compile_and_run update_manifest_614 \
+  work/Version614UpdateManifestSelfTest.swift \
+  Sources/PulseDock/Services/AppUpdateService.swift
 
 compile_and_run clash_controller \
   work/ClashControllerSelfTest.swift \
@@ -101,7 +128,19 @@ if sed -n '/func start()/,/func stop()/p' Sources/PulseDock/App/MonitorStore.swi
   exit 1
 fi
 
-if sed -n '/init()/,/func start()/p' Sources/PulseDock/App/MonitorStore.swift | grep -q 'SecretStore.read'; then
+# Diagnostics must respect the same explicit vault gate as periodic quota
+# reads; a manual network diagnostic cannot cold-start app-server while locked.
+if sed -n '/func runAIDiagnostics()/,/func refreshClashQuota()/p' Sources/PulseDock/App/MonitorStore.swift | grep -q 'quotaService\.read'; then
+  echo "AI diagnostics must not bypass the credential-vault quota gate" >&2
+  exit 1
+fi
+
+if ! rg -q 'verify_update_manifest\.swift' .github/workflows/release.yml; then
+  echo "Release workflow must reverse-verify the Ed25519 update manifest before publishing" >&2
+  exit 1
+fi
+
+if sed -n '/^    init()/,/^    func start()/p' Sources/PulseDock/App/MonitorStore.swift | grep -q 'SecretStore.read'; then
   echo "Store initialization unexpectedly reads Keychain" >&2
   exit 1
 fi
@@ -171,6 +210,8 @@ fi
 VERSION="$(tr -d '[:space:]' < VERSION)"
 PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
 [[ "$VERSION" == "$PLIST_VERSION" ]] || { echo "VERSION and Info.plist disagree" >&2; exit 1; }
+BUNDLE_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist)"
+[[ "$BUNDLE_BUILD" == "${VERSION//./}" ]] || { echo "CFBundleVersion must match the dotless release version" >&2; exit 1; }
 for strings in Resources/*.lproj/Localizable.strings; do plutil -lint "$strings" >/dev/null; done
 if ! rg -q 'CFBundleShortVersionString' Sources/PulseDock/Views/PanelViews.swift; then
   echo "Visible version label must read the application bundle version" >&2
@@ -178,6 +219,19 @@ if ! rg -q 'CFBundleShortVersionString' Sources/PulseDock/Views/PanelViews.swift
 fi
 if rg -q 'Text\("v[0-9]+\.[0-9]+' Sources/PulseDock/Views/PanelViews.swift; then
   echo "Visible version label must not hard-code a release number" >&2
+  exit 1
+fi
+if ! sed -n '/state.compactDensity == .balanced/,/Spacer(minLength: 0)/p' Sources/PulseDock/Views/PanelViews.swift | rg -q 'clashQuota\.compactLabel'; then
+  echo "Balanced compact panel must keep the independent Clash remaining quota" >&2
+  exit 1
+fi
+EXIT_CARD_SOURCE="$(sed -n '/当前出口/,/实时网络/p' Sources/PulseDock/Views/PanelViews.swift)"
+if ! rg -q 'locationHeadline' <<<"$EXIT_CARD_SOURCE" || ! rg -q '经系统代理观测' <<<"$EXIT_CARD_SOURCE" || ! rg -q '直连观测' <<<"$EXIT_CARD_SOURCE"; then
+  echo "Current exit card must lead with country/city and disclose proxy/direct observation" >&2
+  exit 1
+fi
+if sed -n '/当前出口/,/实时网络/p' Sources/PulseDock/Views/PanelViews.swift | rg -q 'Text\(store\.ip\.address\).*size: 18'; then
+  echo "Current exit card must not present a raw IP as its large headline" >&2
   exit 1
 fi
 

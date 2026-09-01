@@ -4,6 +4,7 @@
 
 - 飞书 Webhook、飞书签名密钥、API Key 和 Clash Controller Secret 仅存 macOS Keychain。
 - PulseDock 启动和后台轮询不读取 Keychain；只有用户点击“解锁凭据”后才读取一个统一保险库，并在本次运行复用内存副本。
+- 统一保险库同时充当额度可见性门禁：每次启动未解锁前，Codex、Cursor、Clash 与 API 额度不读取、不显示；锁定时立即清空额度快照和内存中的本地会话数据。
 - 6.4.2 解锁时只读取统一保险库，不再自动枚举旧分散凭据。旧凭据迁移必须由用户主动触发，并且只做禁止认证 UI 的读取。
 - 解锁后的“保存全部变更”“保存并刷新”和飞书保存使用非交互 Keychain 写入；系统拒绝时保留本次会话内存值并显示原因。
 - Cursor 实验模式不存储任何 Cursor 凭据：每次刷新仅只读取得 access token，在内存中请求后释放；绝不读取 refresh token。
