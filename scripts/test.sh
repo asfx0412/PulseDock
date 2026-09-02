@@ -108,6 +108,11 @@ compile_and_run reliability_614 \
   Sources/PulseDock/Models/QuotaModels.swift \
   Sources/PulseDock/Models/QuotaPresentation.swift
 
+compile_and_run location_6141 \
+  work/Version6141LocationSelfTest.swift \
+  Sources/PulseDock/Models/RefreshModels.swift \
+  Sources/PulseDock/Models/WeatherModels.swift
+
 compile_and_run update_manifest_614 \
   work/Version614UpdateManifestSelfTest.swift \
   Sources/PulseDock/Services/AppUpdateService.swift
@@ -142,6 +147,23 @@ fi
 
 if sed -n '/^    init()/,/^    func start()/p' Sources/PulseDock/App/MonitorStore.swift | grep -q 'SecretStore.read'; then
   echo "Store initialization unexpectedly reads Keychain" >&2
+  exit 1
+fi
+
+# Core Location's locationUnknown is transient on Wi-Fi-only Macs.  The
+# implementation must use a bounded short session, never an instantaneous
+# requestLocation callback or persistent tracking.
+LOCATION_SOURCE="$(sed -n '/enum CurrentLocationError/,/^}/p; /^final class CurrentLocationService/,/^}/p; /extension CurrentLocationService/,/^}/p' Sources/PulseDock/Services/CurrentLocationService.swift)"
+if ! rg -q 'manager\.startUpdatingLocation\(\)' <<<"$LOCATION_SOURCE" || rg -q 'manager\.requestLocation\(\)' Sources/PulseDock/Services/CurrentLocationService.swift; then
+  echo "Current location must use a bounded short updating session, not one-shot requestLocation" >&2
+  exit 1
+fi
+if ! rg -q 'case \.locationUnknown:' Sources/PulseDock/Services/CurrentLocationService.swift || ! rg -q 'WeatherLocationRetryPolicy' Sources/PulseDock/App/MonitorStore.swift; then
+  echo "locationUnknown must remain a retryable automatic-location failure" >&2
+  exit 1
+fi
+if ! rg -q 'locationServicesEnabled\(\)' Sources/PulseDock/Services/CurrentLocationService.swift || ! rg -q 'authorizationDenied' Sources/PulseDock/Services/CurrentLocationService.swift; then
+  echo "Location service and authorization states must remain explicit and non-retrying" >&2
   exit 1
 fi
 

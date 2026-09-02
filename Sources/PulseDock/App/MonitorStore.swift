@@ -38,10 +38,18 @@ final class MonitorStore: ObservableObject {
     @Published var citySearchInProgress = false
     @Published var weatherLocationInProgress = false
     @Published var weatherLocationStatus = ""
+    /// A safe technical breadcrumb for help/diagnostics.  UI status remains
+    /// actionable and never exposes Core Location's raw error domain/code.
+    @Published private(set) var weatherLocationDiagnostic = ""
     @Published var weatherLocationMode: WeatherLocationMode {
         didSet {
             UserDefaults.standard.set(weatherLocationMode.rawValue, forKey: PreferenceKey.weatherLocationMode)
-            if weatherLocationMode == .automatic { requestAutomaticWeatherLocation(force: true) }
+            if weatherLocationMode == .automatic {
+                requestAutomaticWeatherLocation(force: true)
+            } else {
+                cancelAutomaticWeatherLocationRetry(resetFailureCount: true)
+                if weatherLocationInProgress { cancelCurrentWeatherLocation() }
+            }
         }
     }
     @Published private(set) var lastWeatherLocationCheck: Date?
@@ -145,6 +153,7 @@ final class MonitorStore: ObservableObject {
     private var weatherTask: Task<Void, Never>?
     private var weatherReadTask: Task<Void, Never>?
     private var weatherReadLocationID: String?
+    private var weatherLocationRetryTask: Task<Void, Never>?
     private var quotaRetryTask: Task<Void, Never>?
     private var weatherRetryTask: Task<Void, Never>?
     private var apiConnectorRetryTasks: [UUID: Task<Void, Never>] = [:]
@@ -169,6 +178,7 @@ final class MonitorStore: ObservableObject {
     private var remoteNetworkGraceUntil: Date?
     private var weatherSelectionGeneration = 0
     private var weatherRefreshGeneration = 0
+    private var automaticWeatherLocationFailureCount = 0
     private var panelShownObserver: NSObjectProtocol?
     private var citySearchGeneration = 0
 
@@ -331,11 +341,17 @@ final class MonitorStore: ObservableObject {
     }
 
     func stop() {
-        [metricTask, probeTask, quotaTask, communityResetTask, weatherTask, weatherReadTask, quotaRetryTask, weatherRetryTask, clashTask, clockTask, remoteTask, apiConnectorTask].forEach { $0?.cancel() }
+        // Invalidate every pending Core Location/MapKit callback before the
+        // app tears down its periodic tasks.  A late result must never revive
+        // a stopped store or overwrite a later manual selection.
+        weatherSelectionGeneration += 1
+        currentLocationService.cancelCurrentRequest()
+        weatherLocationInProgress = false
+        [metricTask, probeTask, quotaTask, communityResetTask, weatherTask, weatherReadTask, weatherLocationRetryTask, quotaRetryTask, weatherRetryTask, clashTask, clockTask, remoteTask, apiConnectorTask].forEach { $0?.cancel() }
         apiConnectorRetryTasks.values.forEach { $0.cancel() }
         apiConnectorRetryTasks.removeAll()
         if let panelShownObserver { NotificationCenter.default.removeObserver(panelShownObserver); self.panelShownObserver = nil }
-        metricTask = nil; probeTask = nil; quotaTask = nil; communityResetTask = nil; weatherTask = nil; weatherReadTask = nil; quotaRetryTask = nil; weatherRetryTask = nil; clashTask = nil; clockTask = nil; remoteTask = nil; apiConnectorTask = nil
+        metricTask = nil; probeTask = nil; quotaTask = nil; communityResetTask = nil; weatherTask = nil; weatherReadTask = nil; weatherLocationRetryTask = nil; quotaRetryTask = nil; weatherRetryTask = nil; clashTask = nil; clockTask = nil; remoteTask = nil; apiConnectorTask = nil
         clashWatcher.stop(); pathObserver.stop()
         mainThreadResponsivenessMonitor.stop()
         let center = NSWorkspace.shared.notificationCenter
@@ -415,6 +431,7 @@ final class MonitorStore: ObservableObject {
     func selectWeatherLocation(_ location: WeatherLocation) {
         // A manual choice always wins over an older Core Location callback.
         weatherSelectionGeneration += 1
+        cancelAutomaticWeatherLocationRetry(resetFailureCount: true)
         if weatherLocationInProgress {
             currentLocationService.cancelCurrentRequest()
             weatherLocationInProgress = false
@@ -435,19 +452,23 @@ final class MonitorStore: ObservableObject {
             return
         }
         weatherSelectionGeneration += 1
+        cancelAutomaticWeatherLocationRetry(resetFailureCount: true)
         let generation = weatherSelectionGeneration
         weatherLocationInProgress = true
-        weatherLocationStatus = "正在请求当前位置…"
+        weatherLocationDiagnostic = ""
+        weatherLocationStatus = "正在获取当前位置（最长 20 秒）…"
         currentLocationService.requestCurrentCity { [weak self] result in
             guard let self else { return }
             guard generation == self.weatherSelectionGeneration else { return }
             self.weatherLocationInProgress = false
             switch result {
             case .success(let location):
+                self.weatherLocationDiagnostic = ""
                 self.weatherLocationStatus = "已使用当前位置：\(location.displayName)"
                 self.applyWeatherLocation(location)
             case .failure(let error):
-                self.weatherLocationStatus = error.localizedDescription
+                self.weatherLocationDiagnostic = error.diagnosticDescription
+                self.weatherLocationStatus = "未能使用当前位置：\(error.localizedDescription)"
             }
         }
     }
@@ -462,10 +483,13 @@ final class MonitorStore: ObservableObject {
         let windowVisible = NSApp.windows.contains(where: \.isVisible)
         let minimumInterval: TimeInterval = windowVisible ? 1_800 : 7_200
         if !force, let lastWeatherLocationCheck, Date().timeIntervalSince(lastWeatherLocationCheck) < minimumInterval { return }
+        weatherLocationRetryTask?.cancel()
+        weatherLocationRetryTask = nil
         weatherSelectionGeneration += 1
         let generation = weatherSelectionGeneration
         weatherLocationInProgress = true
-        weatherLocationStatus = "正在检查当前位置…"
+        weatherLocationDiagnostic = ""
+        weatherLocationStatus = "正在检查当前位置（最长 20 秒）…"
         lastWeatherLocationCheck = Date()
         UserDefaults.standard.set(lastWeatherLocationCheck, forKey: PreferenceKey.lastWeatherLocationCheck)
         currentLocationService.requestCurrentCity { [weak self] result in
@@ -474,6 +498,8 @@ final class MonitorStore: ObservableObject {
             switch result {
             case .success(let candidate):
                 guard self.weatherLocationMode == .automatic else { return }
+                self.cancelAutomaticWeatherLocationRetry(resetFailureCount: true)
+                self.weatherLocationDiagnostic = ""
                 if let existing = self.weatherLocation {
                     guard WeatherLocationPolicy.shouldUpdate(current: existing, candidate: candidate) else {
                         self.weatherLocationStatus = "位置未发生有效变化 · 上次检查 \(Date().formatted(date: .omitted, time: .shortened))"
@@ -483,7 +509,8 @@ final class MonitorStore: ObservableObject {
                 self.weatherLocationStatus = "已自动更新：\(candidate.displayName)"
                 self.applyWeatherLocation(candidate)
             case .failure(let error):
-                self.weatherLocationStatus = "自动定位失败，已保留原地点：\(error.localizedDescription)"
+                self.weatherLocationDiagnostic = error.diagnosticDescription
+                self.handleAutomaticWeatherLocationFailure(error, generation: generation)
             }
         }
     }
@@ -491,9 +518,60 @@ final class MonitorStore: ObservableObject {
     func cancelCurrentWeatherLocation() {
         guard weatherLocationInProgress else { return }
         weatherSelectionGeneration += 1
+        cancelAutomaticWeatherLocationRetry(resetFailureCount: true)
         currentLocationService.cancelCurrentRequest()
         weatherLocationInProgress = false
+        weatherLocationDiagnostic = "Core Location: request cancelled by user"
         weatherLocationStatus = "已取消当前位置请求"
+    }
+
+    /// `locationUnknown` and a short-session timeout are recoverable on
+    /// laptops: networking may be healthy while macOS is still resolving a
+    /// Wi-Fi based position.  Keep the existing city/weather, retry only three
+    /// times, then fall back to the normal 30-minute check.  Permission and
+    /// service states deliberately do not retry.
+    private func handleAutomaticWeatherLocationFailure(_ error: CurrentLocationError, generation: Int) {
+        let retainedLocation = weatherLocation != nil
+        let prefix = retainedLocation ? "暂时无法确定当前位置，已保留原地点" : "暂时无法确定当前位置"
+        guard error.supportsAutomaticRetry else {
+            automaticWeatherLocationFailureCount = 0
+            weatherLocationRetryTask?.cancel()
+            weatherLocationRetryTask = nil
+            weatherLocationStatus = "\(prefix)：\(error.localizedDescription)；请检查系统定位服务和 PulseDock 的位置权限"
+            return
+        }
+
+        automaticWeatherLocationFailureCount += 1
+        guard let delay = WeatherLocationRetryPolicy.delay(forFailureCount: automaticWeatherLocationFailureCount) else {
+            weatherLocationRetryTask?.cancel()
+            weatherLocationRetryTask = nil
+            weatherLocationStatus = "\(prefix)；已完成本轮自动重试，将在下次常规检查时再试"
+            return
+        }
+
+        weatherLocationStatus = "\(prefix)；将在\(locationRetryDelayLabel(delay))自动重试"
+        weatherLocationRetryTask?.cancel()
+        weatherLocationRetryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self,
+                  self.weatherLocationMode == .automatic,
+                  self.weatherSelectionGeneration == generation,
+                  !self.weatherLocationInProgress else { return }
+            self.requestAutomaticWeatherLocation(force: true)
+        }
+    }
+
+    private func cancelAutomaticWeatherLocationRetry(resetFailureCount: Bool) {
+        weatherLocationRetryTask?.cancel()
+        weatherLocationRetryTask = nil
+        if resetFailureCount { automaticWeatherLocationFailureCount = 0 }
+    }
+
+    private func locationRetryDelayLabel(_ delay: TimeInterval) -> String {
+        switch delay {
+        case ..<60: "\(Int(delay)) 秒后"
+        default: "\(Int(delay / 60)) 分钟后"
+        }
     }
 
     func refreshWeather() {

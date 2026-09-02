@@ -7,6 +7,36 @@ enum WeatherLocationMode: String, CaseIterable, Sendable {
     var label: String { self == .fixed ? "固定地点" : "自动跟随当前位置" }
 }
 
+/// Location acquisition is deliberately a short foreground session, never a
+/// continuous tracker.  A Mac may have only Wi-Fi based positioning, so a
+/// single `requestLocation()` callback is not a dependable freshness signal.
+/// These values keep the location good enough for city-level weather without
+/// silently accepting an old or extremely coarse fix.
+enum WeatherLocationAcquisitionPolicy {
+    static let sessionTimeout: TimeInterval = 20
+    static let reverseGeocodeTimeout: TimeInterval = 5
+    static let maximumLocationAge: TimeInterval = 30
+    static let maximumHorizontalAccuracyMeters: Double = 5_000
+
+    static func accepts(timestamp: Date, horizontalAccuracy: Double, now: Date = Date()) -> Bool {
+        now.timeIntervalSince(timestamp) <= maximumLocationAge
+            && horizontalAccuracy >= 0
+            && horizontalAccuracy <= maximumHorizontalAccuracyMeters
+    }
+}
+
+/// Retries are intentionally separate from weather-network retries.  This
+/// keeps a temporary Core Location `locationUnknown` from waiting for the next
+/// 30-minute weather cycle, while avoiding any form of persistent tracking.
+enum WeatherLocationRetryPolicy {
+    static let delays: [TimeInterval] = [30, 120, 600]
+
+    static func delay(forFailureCount count: Int) -> TimeInterval? {
+        guard count > 0, count <= delays.count else { return nil }
+        return delays[count - 1]
+    }
+}
+
 /// Public, non-sensitive category for a failed weather read.  The full URL,
 /// coordinates and raw networking error remain local diagnostic evidence and
 /// are not rendered in the compact dashboard.

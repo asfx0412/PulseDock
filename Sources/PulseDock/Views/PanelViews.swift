@@ -1032,8 +1032,9 @@ private struct ExpandedPanel: View {
                                 .font(.system(size: 9))
                         }.buttonStyle(.plain)
                     }
-                    Text(store.weatherLocationStatus.isEmpty ? "固定地点不会自动改变；自动跟随需授权定位，移动约 2 公里且行政区变化后更新。天气约每 30 分钟刷新，不根据公网 IP 或 Clash 节点跳城。" : store.weatherLocationStatus)
+                    Text(store.weatherLocationStatus.isEmpty ? "固定地点不会自动改变；自动跟随会短时获取当前位置，移动约 2 公里且行政区变化后更新。天气约每 30 分钟刷新，不根据公网 IP 或 Clash 节点跳城。" : store.weatherLocationStatus)
                         .font(.system(size: 8.5)).foregroundStyle(.secondary)
+                        .help(store.weatherLocationDiagnostic.isEmpty ? "天气位置仅使用 macOS 定位服务，不读取公网 IP 或 Clash 节点位置。" : store.weatherLocationDiagnostic)
                 }
             }
             Card {
