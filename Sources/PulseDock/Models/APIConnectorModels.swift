@@ -10,6 +10,7 @@ enum APIConnectorKind: String, Codable, CaseIterable, Sendable {
     case glmCodingPlan
     case deepSeekBalance
     case cursorLocalUsage
+    case githubCopilotUsage
 
     var label: String {
         switch self {
@@ -18,13 +19,14 @@ enum APIConnectorKind: String, Codable, CaseIterable, Sendable {
         case .glmCodingPlan: "GLM Coding Plan 用量"
         case .deepSeekBalance: "DeepSeek 账户余额"
         case .cursorLocalUsage: "Cursor 本地额度（实验性）"
+        case .githubCopilotUsage: "GitHub Copilot 个人用量"
         }
     }
 
     var requiresAPIKey: Bool {
         switch self {
         case .codexLocalQuota, .cursorLocalUsage: false
-        case .customRateLimit, .glmCodingPlan, .deepSeekBalance: true
+        case .customRateLimit, .glmCodingPlan, .deepSeekBalance, .githubCopilotUsage: true
         }
     }
 
@@ -37,6 +39,7 @@ enum APIConnectorKind: String, Codable, CaseIterable, Sendable {
         case .glmCodingPlan: "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
         case .deepSeekBalance: "https://api.deepseek.com/user/balance"
         case .cursorLocalUsage: "本机 Cursor 登录会话（只读）"
+        case .githubCopilotUsage: "https://api.github.com/users/{username}/settings/billing"
         }
     }
 }
@@ -50,6 +53,10 @@ struct APIConnectorConfiguration: Identifiable, Codable, Sendable, Equatable {
     var name: String
     var kind: APIConnectorKind = .customRateLimit
     var endpoint: String
+    /// A non-secret GitHub login for the fixed Copilot personal endpoints.
+    /// It is intentionally not an arbitrary URL and supports multiple
+    /// accounts without relying on browser sessions or local Copilot tokens.
+    var accountID: String? = nil
     var enabled = true
     /// Multiple sources may be visible in the expanded Workbench.
     var showOnDashboard = false
@@ -57,10 +64,10 @@ struct APIConnectorConfiguration: Identifiable, Codable, Sendable, Equatable {
     var pinned = false
     var sortOrder = 0
 
-    enum CodingKeys: String, CodingKey { case id, name, kind, endpoint, enabled, showOnDashboard, pinned, sortOrder }
+    enum CodingKeys: String, CodingKey { case id, name, kind, endpoint, accountID, enabled, showOnDashboard, pinned, sortOrder }
 
-    init(id: UUID = UUID(), name: String, kind: APIConnectorKind = .customRateLimit, endpoint: String, enabled: Bool = true, showOnDashboard: Bool = false, pinned: Bool = false, sortOrder: Int = 0) {
-        self.id = id; self.name = name; self.kind = kind; self.endpoint = endpoint; self.enabled = enabled; self.showOnDashboard = showOnDashboard; self.pinned = pinned; self.sortOrder = sortOrder
+    init(id: UUID = UUID(), name: String, kind: APIConnectorKind = .customRateLimit, endpoint: String, accountID: String? = nil, enabled: Bool = true, showOnDashboard: Bool = false, pinned: Bool = false, sortOrder: Int = 0) {
+        self.id = id; self.name = name; self.kind = kind; self.endpoint = endpoint; self.accountID = accountID; self.enabled = enabled; self.showOnDashboard = showOnDashboard; self.pinned = pinned; self.sortOrder = sortOrder
     }
 
     static var codexLocalDefault: APIConnectorConfiguration {
@@ -101,6 +108,12 @@ struct APIConnectorConfiguration: Identifiable, Codable, Sendable, Equatable {
             if value.sortOrder < 0 { value.sortOrder = offset }
             value.name = String(value.name.prefix(120))
             value.endpoint = String(value.endpoint.prefix(2_048))
+            value.accountID = value.accountID
+                .map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(39)) }
+                .flatMap { $0.isEmpty ? nil : $0 }
+            if value.kind == .githubCopilotUsage {
+                value.endpoint = APIConnectorKind.githubCopilotUsage.defaultEndpoint
+            }
             sanitized.append(value)
         }
         var builtIn = codex ?? codexLocalDefault
@@ -132,6 +145,7 @@ struct APIConnectorConfiguration: Identifiable, Codable, Sendable, Equatable {
         name = try c.decode(String.self, forKey: .name)
         kind = try c.decodeIfPresent(APIConnectorKind.self, forKey: .kind) ?? .customRateLimit
         endpoint = try c.decode(String.self, forKey: .endpoint)
+        accountID = try c.decodeIfPresent(String.self, forKey: .accountID)
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         showOnDashboard = try c.decodeIfPresent(Bool.self, forKey: .showOnDashboard) ?? pinned
@@ -150,6 +164,17 @@ struct APIUsageWindow: Identifiable, Sendable, Equatable {
     var remainingPercent: Double { max(0, min(100, 100 - usedPercent)) }
 }
 
+/// A provider-native usage measurement.  Unlike `APIUsageWindow`, this has no
+/// implied total or remaining percentage.  It is used for GitHub Copilot's
+/// official billing data, which can report amounts used without publishing a
+/// user's plan allowance.
+struct APIUsageMetric: Identifiable, Sendable, Equatable {
+    var id: String
+    var title: String
+    var usedValue: String
+    var detail: String
+}
+
 struct APIConnectorSnapshot: Identifiable, Sendable, Equatable {
     var id: UUID
     var state: QuotaSnapshot.State = .loading
@@ -159,6 +184,10 @@ struct APIConnectorSnapshot: Identifiable, Sendable, Equatable {
     var updatedAt: Date?
     var message = "等待检测"
     var usageWindows: [APIUsageWindow] = []
+    var usageMetrics: [APIUsageMetric] = []
+    /// Display-only source value where the provider has no reliable remaining
+    /// percentage.  This keeps dashboard/pinned cards semantically honest.
+    var primaryValue: String? = nil
     var refresh = RefreshMetadata()
     /// The provider's own aggregate remaining percentage, when it exposes
     /// one.  This is a presentation hint only; it is never combined with
@@ -169,7 +198,7 @@ struct APIConnectorSnapshot: Identifiable, Sendable, Equatable {
     /// transition is in progress. State/message are deliberately excluded:
     /// callers must always label retained data as stale or waiting.
     var hasDisplayPayload: Bool {
-        !usageWindows.isEmpty || remainingRequests != nil || remainingTokens != nil
+        !usageWindows.isEmpty || !usageMetrics.isEmpty || primaryValue != nil || remainingRequests != nil || remainingTokens != nil
     }
 
     @discardableResult
@@ -180,11 +209,15 @@ struct APIConnectorSnapshot: Identifiable, Sendable, Equatable {
         resetAt = previous.resetAt
         updatedAt = previous.updatedAt
         usageWindows = previous.usageWindows
+        usageMetrics = previous.usageMetrics
+        primaryValue = previous.primaryValue
         primaryRemainingPercent = previous.primaryRemainingPercent
         return true
     }
 
-    var summary: String { usageWindows.isEmpty ? (remainingTokens ?? remainingRequests ?? "--") : "\(usageWindows.count) 个额度周期" }
+    var summary: String {
+        primaryValue ?? (usageWindows.isEmpty ? (remainingTokens ?? remainingRequests ?? "--") : "\(usageWindows.count) 个额度周期")
+    }
     var color: Color {
         switch state {
         case .available: .green

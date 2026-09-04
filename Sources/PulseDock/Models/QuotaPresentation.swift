@@ -61,7 +61,9 @@ struct QuotaPresentation: Identifiable, Sendable, Equatable {
         let freshness = Self.freshness(for: snapshot.refresh, fallback: snapshot.state)
         let lowestRemaining = snapshot.usageWindows.map(\.remainingPercent).min()
         let summaryRemaining = snapshot.primaryRemainingPercent ?? lowestRemaining
-        let value = summaryRemaining.map { String(format: "%.0f%%", $0) } ?? snapshot.summary
+        // Copilot and similar providers can publish an amount used without a
+        // plan total.  Never turn that into a made-up remaining percentage.
+        let value = snapshot.primaryValue ?? summaryRemaining.map { String(format: "%.0f%%", $0) } ?? snapshot.summary
         let detail: String
         if freshness == .waitingUnlock {
             detail = retained
@@ -70,6 +72,8 @@ struct QuotaPresentation: Identifiable, Sendable, Equatable {
         } else if let summaryRemaining {
             let label = snapshot.primaryRemainingPercent == nil ? "最低剩余" : "综合剩余"
             detail = "\(label) \(Int(summaryRemaining.rounded()))% · \(DataFreshness.label(snapshot.updatedAt, now: now))"
+        } else if !snapshot.usageMetrics.isEmpty {
+            detail = "官方已用量 · \(DataFreshness.label(snapshot.updatedAt, now: now))"
         } else {
             detail = "\(snapshot.summary) · \(DataFreshness.label(snapshot.updatedAt, now: now))"
         }

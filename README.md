@@ -11,7 +11,7 @@
 <p align="center"><a href="README.md">简体中文</a> | <a href="README.en.md">English</a></p>
 
 <p align="center">
-  <a href="https://github.com/asfx0412/PulseDock/releases"><img alt="Version" src="https://img.shields.io/badge/version-6.14.1-2f80ed"></a>
+  <a href="https://github.com/asfx0412/PulseDock/releases"><img alt="Version" src="https://img.shields.io/badge/version-6.15.1-2f80ed"></a>
   <img alt="Platform" src="https://img.shields.io/badge/macOS-26%2B-black">
   <img alt="Architecture" src="https://img.shields.io/badge/Apple%20Silicon-arm64-8a2be2">
   <img alt="Swift" src="https://img.shields.io/badge/Swift-6.2-f05138">
@@ -19,7 +19,7 @@
 
 PulseDock 将 AI 网络健康、Codex 额度、Clash 用量、SSH/GPU 设备、应用活跃度、番茄钟、天气、工作日历和专注声音集中在一个低干扰浮窗中。数据尽量在本机处理，秘密保存在 macOS Keychain，不会写入仓库或导出配置。
 
-> 当前版本：**6.14.1**。安装包面向 Apple Silicon 和 macOS 26。更新器会校验 GitHub Release 清单的 Ed25519 签名、SHA-256、Bundle ID、版本、arm64 与代码签名；仍为 ad-hoc 签名，首次运行可能出现 Gatekeeper 提示。
+> 当前版本：**6.15.1**。安装包面向 Apple Silicon 和 macOS 26。更新器会校验 GitHub Release 清单的 Ed25519 签名、SHA-256、Bundle ID、版本、arm64 与代码签名；仍为 ad-hoc 签名，首次运行可能出现 Gatekeeper 提示。
 
 ## 界面预览
 
@@ -84,7 +84,7 @@ chmod +x scripts/test.sh scripts/build.sh
 open outputs/PulseDock.app
 ```
 
-构建脚本生成 `outputs/PulseDock.app` 和 `outputs/PulseDock-6.14.1.zip`，并执行签名、arm64 与解包验证。GitHub Release 发布还需要配置仅在 GitHub Actions 使用的更新私钥；完整发布仍未具备 Developer ID 签名和 Apple 公证。
+构建脚本生成 `outputs/PulseDock.app` 和 `outputs/PulseDock-6.15.1.zip`，并执行签名、arm64 与解包验证。GitHub Release 发布还需要配置仅在 GitHub Actions 使用的更新私钥；完整发布仍未具备 Developer ID 签名和 Apple 公证。
 
 ## 首次配置
 

@@ -32,7 +32,12 @@ final class MonitorStore: ObservableObject {
     @Published var codexQuota = QuotaSnapshot.locked
     @Published var codexCommunityReset = CodexCommunityResetSnapshot.loading
     @Published var weather = WeatherSnapshot.unconfigured
-    @Published var weatherLocation: WeatherLocation? { didSet { persistWeatherLocation(); refreshWeather() } }
+    @Published var weatherLocation: WeatherLocation? {
+        didSet {
+            persistWeatherLocation()
+            if !suppressWeatherLocationRefresh { refreshWeather() }
+        }
+    }
     @Published var citySearchQuery = ""
     @Published var citySearchResults: [WeatherLocation] = []
     @Published var citySearchInProgress = false
@@ -41,6 +46,7 @@ final class MonitorStore: ObservableObject {
     /// A safe technical breadcrumb for help/diagnostics.  UI status remains
     /// actionable and never exposes Core Location's raw error domain/code.
     @Published private(set) var weatherLocationDiagnostic = ""
+    @Published private(set) var weatherLocationDiagnosticKind: WeatherLocationDiagnosticKind?
     @Published var weatherLocationMode: WeatherLocationMode {
         didSet {
             UserDefaults.standard.set(weatherLocationMode.rawValue, forKey: PreferenceKey.weatherLocationMode)
@@ -89,6 +95,7 @@ final class MonitorStore: ObservableObject {
     @Published var newAPIConnectorName = ""
     @Published var newAPIConnectorKind: APIConnectorKind = .customRateLimit
     @Published var newAPIConnectorEndpoint = ""
+    @Published var newAPIConnectorAccountID = ""
     @Published var newAPIConnectorKey = ""
     @Published private(set) var isRefreshingAPIConnectors = false
     @Published private(set) var credentialVaultUnlocked = false
@@ -178,6 +185,7 @@ final class MonitorStore: ObservableObject {
     private var remoteNetworkGraceUntil: Date?
     private var weatherSelectionGeneration = 0
     private var weatherRefreshGeneration = 0
+    private var suppressWeatherLocationRefresh = false
     private var automaticWeatherLocationFailureCount = 0
     private var panelShownObserver: NSObjectProtocol?
     private var citySearchGeneration = 0
@@ -456,18 +464,18 @@ final class MonitorStore: ObservableObject {
         let generation = weatherSelectionGeneration
         weatherLocationInProgress = true
         weatherLocationDiagnostic = ""
+        weatherLocationDiagnosticKind = nil
         weatherLocationStatus = "正在获取当前位置（最长 20 秒）…"
         currentLocationService.requestCurrentCity { [weak self] result in
             guard let self else { return }
             guard generation == self.weatherSelectionGeneration else { return }
             self.weatherLocationInProgress = false
             switch result {
-            case .success(let location):
-                self.weatherLocationDiagnostic = ""
-                self.weatherLocationStatus = "已使用当前位置：\(location.displayName)"
-                self.applyWeatherLocation(location)
+            case .success(let candidate):
+                self.applyLocationCandidate(candidate, generation: generation, initiatedByUser: true)
             case .failure(let error):
                 self.weatherLocationDiagnostic = error.diagnosticDescription
+                self.weatherLocationDiagnosticKind = error.diagnosticKind
                 self.weatherLocationStatus = "未能使用当前位置：\(error.localizedDescription)"
             }
         }
@@ -489,6 +497,7 @@ final class MonitorStore: ObservableObject {
         let generation = weatherSelectionGeneration
         weatherLocationInProgress = true
         weatherLocationDiagnostic = ""
+        weatherLocationDiagnosticKind = nil
         weatherLocationStatus = "正在检查当前位置（最长 20 秒）…"
         lastWeatherLocationCheck = Date()
         UserDefaults.standard.set(lastWeatherLocationCheck, forKey: PreferenceKey.lastWeatherLocationCheck)
@@ -499,19 +508,73 @@ final class MonitorStore: ObservableObject {
             case .success(let candidate):
                 guard self.weatherLocationMode == .automatic else { return }
                 self.cancelAutomaticWeatherLocationRetry(resetFailureCount: true)
-                self.weatherLocationDiagnostic = ""
-                if let existing = self.weatherLocation {
-                    guard WeatherLocationPolicy.shouldUpdate(current: existing, candidate: candidate) else {
-                        self.weatherLocationStatus = "位置未发生有效变化 · 上次检查 \(Date().formatted(date: .omitted, time: .shortened))"
-                        return
-                    }
-                }
-                self.weatherLocationStatus = "已自动更新：\(candidate.displayName)"
-                self.applyWeatherLocation(candidate)
+                self.applyLocationCandidate(candidate, generation: generation, initiatedByUser: false)
             case .failure(let error):
                 self.weatherLocationDiagnostic = error.diagnosticDescription
+                self.weatherLocationDiagnosticKind = error.diagnosticKind
                 self.handleAutomaticWeatherLocationFailure(error, generation: generation)
             }
+        }
+    }
+
+    /// A resolved city is not committed until its weather read succeeds.  This
+    /// makes location, administrative label and weather one transaction: a
+    /// late callback, a geocoding result without weather, or a failing weather
+    /// endpoint cannot leave the dashboard showing a new city with old data.
+    private func applyLocationCandidate(_ candidate: WeatherLocationCandidate, generation: Int, initiatedByUser: Bool) {
+        guard generation == weatherSelectionGeneration else { return }
+        let proposed = candidate.location
+        if candidate.evidence == .recentReusable {
+            guard let existing = weatherLocation,
+                  WeatherLocationPolicy.mayConfirmExisting(current: existing, candidate: proposed) else {
+                weatherLocationDiagnosticKind = .recentReusable
+                weatherLocationDiagnostic = WeatherLocationDiagnosticKind.recentReusable.label
+                weatherLocationStatus = "系统仅提供最近位置，未自动更改原地点；将在下次检查时再次确认"
+                return
+            }
+            weatherLocationDiagnosticKind = .recentReusable
+            weatherLocationDiagnostic = WeatherLocationDiagnosticKind.recentReusable.label
+            weatherLocationStatus = "已用系统最近位置确认原地点：\(existing.displayName)"
+            return
+        }
+
+        if let existing = weatherLocation, !WeatherLocationPolicy.shouldUpdate(current: existing, candidate: proposed) {
+            weatherLocationDiagnosticKind = .fresh
+            weatherLocationDiagnostic = WeatherLocationDiagnosticKind.fresh.label
+            weatherLocationStatus = "位置未发生有效变化 · 上次检查 \(Date().formatted(date: .omitted, time: .shortened))"
+            return
+        }
+
+        weatherLocationDiagnosticKind = .fresh
+        weatherLocationDiagnostic = WeatherLocationDiagnosticKind.fresh.label
+        weatherLocationStatus = "已确认当前位置，正在读取该地点天气…"
+        let oldWeather = weather
+        Task { [weak self] in
+            guard let self else { return }
+            let freshWeather = await self.weatherService.read(location: proposed)
+            guard generation == self.weatherSelectionGeneration,
+                  (!initiatedByUser ? self.weatherLocationMode == .automatic : true) else { return }
+            guard freshWeather.state == .available else {
+                // Retain the previous coherent location/weather pair.  The
+                // normal weather retry path remains responsible for network
+                // recovery; no coordinate fallback is ever displayed.
+                self.weather = oldWeather
+                self.weatherLocationDiagnosticKind = .reverseGeocodeFailed
+                self.weatherLocationDiagnostic = "地点已解析，但天气服务暂时不可用"
+                self.weatherLocationStatus = "已保留原地点和天气；将在下次检查时重试"
+                return
+            }
+            self.suppressWeatherLocationRefresh = true
+            self.weatherLocation = proposed
+            self.suppressWeatherLocationRefresh = false
+            var committed = freshWeather
+            committed.refresh = .fresh(at: freshWeather.updatedAt ?? Date())
+            self.weather = committed
+            self.citySearchResults = []
+            self.citySearchQuery = proposed.name
+            self.weatherLocationStatus = initiatedByUser
+                ? "已使用当前位置：\(proposed.displayName)"
+                : "已自动更新：\(proposed.displayName)"
         }
     }
 
@@ -522,6 +585,7 @@ final class MonitorStore: ObservableObject {
         currentLocationService.cancelCurrentRequest()
         weatherLocationInProgress = false
         weatherLocationDiagnostic = "Core Location: request cancelled by user"
+        weatherLocationDiagnosticKind = .cancelled
         weatherLocationStatus = "已取消当前位置请求"
     }
 
@@ -1217,11 +1281,18 @@ final class MonitorStore: ObservableObject {
 
     func addAPIConnector() {
         let name = newAPIConnectorName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let endpoint = newAPIConnectorKind == .cursorLocalUsage ? newAPIConnectorKind.defaultEndpoint : newAPIConnectorEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        let endpoint = (newAPIConnectorKind == .cursorLocalUsage || newAPIConnectorKind == .githubCopilotUsage)
+            ? newAPIConnectorKind.defaultEndpoint
+            : newAPIConnectorEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty,
               !newAPIConnectorKind.isBuiltInSingleton,
-              (newAPIConnectorKind == .cursorLocalUsage || URL(string: endpoint)?.scheme == "https") else { return }
-        let connector = APIConnectorConfiguration(name: name, kind: newAPIConnectorKind, endpoint: endpoint, sortOrder: apiConnectors.count)
+              (newAPIConnectorKind == .cursorLocalUsage || newAPIConnectorKind == .githubCopilotUsage || URL(string: endpoint)?.scheme == "https"),
+              newAPIConnectorKind != .githubCopilotUsage || APIConnectorService.isValidGitHubUsername(newAPIConnectorAccountID) else { return }
+        let connector = APIConnectorConfiguration(
+            name: name, kind: newAPIConnectorKind, endpoint: endpoint,
+            accountID: newAPIConnectorKind == .githubCopilotUsage ? newAPIConnectorAccountID.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
+            sortOrder: apiConnectors.count
+        )
         apiConnectors.append(connector)
         if newAPIConnectorKind.requiresAPIKey {
             guard credentialVaultUnlocked else {
@@ -1231,14 +1302,14 @@ final class MonitorStore: ObservableObject {
                     updatedAt: Date(),
                     message: "已添加；请先解锁统一凭据保险库，再填写并保存 API Key"
                 )
-                newAPIConnectorName = ""; newAPIConnectorEndpoint = ""; newAPIConnectorKey = ""; newAPIConnectorKind = .customRateLimit
+                newAPIConnectorName = ""; newAPIConnectorEndpoint = ""; newAPIConnectorAccountID = ""; newAPIConnectorKey = ""; newAPIConnectorKind = .customRateLimit
                 return
             }
             apiConnectorKeyCache[connector.id] = newAPIConnectorKey
             credentialVault[apiCredentialKey(connector.id)] = newAPIConnectorKey
             saveCredentialVault()
         }
-        newAPIConnectorName = ""; newAPIConnectorEndpoint = ""; newAPIConnectorKey = ""; newAPIConnectorKind = .customRateLimit
+        newAPIConnectorName = ""; newAPIConnectorEndpoint = ""; newAPIConnectorAccountID = ""; newAPIConnectorKey = ""; newAPIConnectorKind = .customRateLimit
         refreshAPIConnectors()
     }
 

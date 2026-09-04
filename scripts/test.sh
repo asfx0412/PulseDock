@@ -113,6 +113,15 @@ compile_and_run location_6141 \
   Sources/PulseDock/Models/RefreshModels.swift \
   Sources/PulseDock/Models/WeatherModels.swift
 
+compile_and_run feature_615 \
+  work/Version615FeatureSelfTest.swift \
+  Sources/PulseDock/Models/RefreshModels.swift \
+  Sources/PulseDock/Models/WeatherModels.swift \
+  Sources/PulseDock/Models/APIConnectorModels.swift \
+  Sources/PulseDock/Models/QuotaModels.swift \
+  Sources/PulseDock/Services/CursorUsageService.swift \
+  Sources/PulseDock/Services/APIConnectorService.swift
+
 compile_and_run update_manifest_614 \
   work/Version614UpdateManifestSelfTest.swift \
   Sources/PulseDock/Services/AppUpdateService.swift

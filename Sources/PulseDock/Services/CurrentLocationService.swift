@@ -1,6 +1,5 @@
 @preconcurrency import CoreLocation
 import Foundation
-import MapKit
 
 enum CurrentLocationError: LocalizedError {
     case servicesDisabled
@@ -9,6 +8,7 @@ enum CurrentLocationError: LocalizedError {
     case temporarilyUnavailable
     case inadequateAccuracy
     case timedOut
+    case reverseGeocodeFailed
     case cancelled
     case unexpected(String)
 
@@ -29,6 +29,8 @@ enum CurrentLocationError: LocalizedError {
             "当前位置精度暂时不足"
         case .timedOut:
             "暂时未能确定当前位置"
+        case .reverseGeocodeFailed:
+            "已取得位置，但暂时无法确认城市名称"
         case .cancelled:
             "已取消当前位置请求"
         case .unexpected:
@@ -40,31 +42,38 @@ enum CurrentLocationError: LocalizedError {
     /// card's primary status line.
     var diagnosticDescription: String {
         switch self {
-        case .servicesDisabled:
-            "Core Location: location services disabled"
-        case .authorizationDenied:
-            "Core Location: authorization denied"
-        case .authorizationRestricted:
-            "Core Location: authorization restricted"
-        case .temporarilyUnavailable:
-            "Core Location: locationUnknown (kCLErrorDomain 0)"
-        case .inadequateAccuracy:
-            "Core Location: only stale or > \(Int(WeatherLocationAcquisitionPolicy.maximumHorizontalAccuracyMeters)) m accuracy fixes arrived"
-        case .timedOut:
-            "Core Location: no acceptable fix within \(Int(WeatherLocationAcquisitionPolicy.sessionTimeout)) seconds"
-        case .cancelled:
-            "Core Location: request cancelled by user or a newer selection"
-        case let .unexpected(detail):
-            "Core Location: \(detail)"
+        case .servicesDisabled: WeatherLocationDiagnosticKind.servicesDisabled.label
+        case .authorizationDenied: WeatherLocationDiagnosticKind.authorizationDenied.label
+        case .authorizationRestricted: WeatherLocationDiagnosticKind.authorizationRestricted.label
+        case .temporarilyUnavailable: WeatherLocationDiagnosticKind.locationUnknown.label
+        case .inadequateAccuracy: WeatherLocationDiagnosticKind.inadequateAccuracy.label
+        case .timedOut: WeatherLocationDiagnosticKind.timedOut.label
+        case .reverseGeocodeFailed: WeatherLocationDiagnosticKind.reverseGeocodeFailed.label
+        case .cancelled: WeatherLocationDiagnosticKind.cancelled.label
+        case .unexpected: WeatherLocationDiagnosticKind.unexpected.label
         }
     }
 
     var supportsAutomaticRetry: Bool {
         switch self {
-        case .temporarilyUnavailable, .inadequateAccuracy, .timedOut, .unexpected:
+        case .temporarilyUnavailable, .inadequateAccuracy, .timedOut, .reverseGeocodeFailed, .unexpected:
             true
         case .servicesDisabled, .authorizationDenied, .authorizationRestricted, .cancelled:
             false
+        }
+    }
+
+    var diagnosticKind: WeatherLocationDiagnosticKind {
+        switch self {
+        case .servicesDisabled: .servicesDisabled
+        case .authorizationDenied: .authorizationDenied
+        case .authorizationRestricted: .authorizationRestricted
+        case .temporarilyUnavailable: .locationUnknown
+        case .inadequateAccuracy: .inadequateAccuracy
+        case .timedOut: .timedOut
+        case .reverseGeocodeFailed: .reverseGeocodeFailed
+        case .cancelled: .cancelled
+        case .unexpected: .unexpected
         }
     }
 }
@@ -78,13 +87,12 @@ enum CurrentLocationError: LocalizedError {
 final class CurrentLocationService: NSObject {
     private let manager = CLLocationManager()
     private var activeRequestID: UUID?
-    private var completion: ((Result<WeatherLocation, CurrentLocationError>) -> Void)?
+    private var completion: ((Result<WeatherLocationCandidate, CurrentLocationError>) -> Void)?
     private var timeoutTask: Task<Void, Never>?
     private var reverseGeocodeTask: Task<Void, Never>?
-    private var reverseGeocodeTimeoutTask: Task<Void, Never>?
-    private var reverseGeocodeRequest: MKReverseGeocodingRequest?
     private var sawLocationUnknown = false
     private var sawInadequateFix = false
+    private var bestRecentReusableLocation: CLLocation?
 
     override init() {
         super.init()
@@ -92,7 +100,7 @@ final class CurrentLocationService: NSObject {
         manager.desiredAccuracy = kCLLocationAccuracyKilometer
     }
 
-    func requestCurrentCity(completion: @escaping (Result<WeatherLocation, CurrentLocationError>) -> Void) {
+    func requestCurrentCity(completion: @escaping (Result<WeatherLocationCandidate, CurrentLocationError>) -> Void) {
         guard activeRequestID == nil else {
             completion(.failure(.unexpected("a location request is already active")))
             return
@@ -102,10 +110,15 @@ final class CurrentLocationService: NSObject {
         self.completion = completion
         sawLocationUnknown = false
         sawInadequateFix = false
+        bestRecentReusableLocation = nil
         timeoutTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(WeatherLocationAcquisitionPolicy.sessionTimeout))
             guard !Task.isCancelled else { return }
             guard let self else { return }
+            if let reusable = self.bestRecentReusableLocation {
+                self.reverseGeocode(reusable, evidence: .recentReusable, requestID: requestID)
+                return
+            }
             let error: CurrentLocationError
             if self.sawLocationUnknown {
                 error = .temporarilyUnavailable
@@ -144,62 +157,81 @@ final class CurrentLocationService: NSObject {
         }
     }
 
-    private func finish(_ requestID: UUID, _ result: Result<WeatherLocation, CurrentLocationError>) {
+    private func finish(_ requestID: UUID, _ result: Result<WeatherLocationCandidate, CurrentLocationError>) {
         guard activeRequestID == requestID else { return }
         manager.stopUpdatingLocation()
         timeoutTask?.cancel(); timeoutTask = nil
         reverseGeocodeTask?.cancel(); reverseGeocodeTask = nil
-        reverseGeocodeTimeoutTask?.cancel(); reverseGeocodeTimeoutTask = nil
-        reverseGeocodeRequest?.cancel(); reverseGeocodeRequest = nil
         activeRequestID = nil
         sawLocationUnknown = false
         sawInadequateFix = false
+        bestRecentReusableLocation = nil
         let callback = completion
         completion = nil
         callback?(result)
     }
 
-    private func weatherLocation(for location: CLLocation, mapItem: MKMapItem? = nil) -> WeatherLocation {
-        let coordinate = location.coordinate
-        let city = mapItem?.addressRepresentations?.cityName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let countryName = mapItem?.addressRepresentations?.regionName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let coordinateName = String(format: "当前位置 %.2f, %.2f", coordinate.latitude, coordinate.longitude)
-        let name = city?.isEmpty == false ? city! : coordinateName
-        let country = (countryName?.isEmpty == false ? countryName! : "定位坐标")
+    private func resolvedWeatherLocation(for location: CLLocation, placemark: CLPlacemark) -> WeatherLocation? {
+        func clean(_ value: String?) -> String? {
+            guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+            return value
+        }
+        // `subLocality` is district/county; `locality` is city;
+        // `administrativeArea` is province/state.  We do not map a generic
+        // region label to country, which caused the 6.14.1 name regression.
+        let district = clean(placemark.subLocality)
+        let city = clean(placemark.locality) ?? clean(placemark.subAdministrativeArea)
+        let province = clean(placemark.administrativeArea)
+        guard let country = clean(placemark.country), let name = district ?? city ?? province else { return nil }
         return WeatherLocation(
-            name: name, admin2: nil, admin1: nil, country: country,
-            latitude: coordinate.latitude, longitude: coordinate.longitude,
+            name: name,
+            admin2: district == nil ? nil : city,
+            admin1: province,
+            country: country,
+            latitude: location.coordinate.latitude,
+            longitude: location.coordinate.longitude,
             timezone: TimeZone.current.identifier
         )
     }
 
-    private func reverseGeocode(_ location: CLLocation, requestID: UUID) {
+    private func reverseGeocode(_ location: CLLocation, evidence: WeatherLocationEvidence, requestID: UUID) {
         manager.stopUpdatingLocation()
         timeoutTask?.cancel(); timeoutTask = nil
-        let fallback = weatherLocation(for: location)
-        guard let request = MKReverseGeocodingRequest(location: location) else {
-            finish(requestID, .success(fallback))
-            return
-        }
-        reverseGeocodeRequest = request
-        reverseGeocodeTimeoutTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(WeatherLocationAcquisitionPolicy.reverseGeocodeTimeout))
-            guard !Task.isCancelled, let self else { return }
-            self.reverseGeocodeTask?.cancel()
-            self.finish(requestID, .success(fallback))
-        }
+        // Never represent coordinates as a city.  The location/weather pair
+        // is committed only after a complete administrative name resolves.
         reverseGeocodeTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let mapItems = try await request.mapItems
-                guard !Task.isCancelled else { return }
-                self.finish(requestID, .success(self.weatherLocation(for: location, mapItem: mapItems.first)))
+                let placemarks = try await Self.reverseGeocode(location)
+                guard !Task.isCancelled,
+                      let placemark = placemarks.first,
+                      let resolved = self.resolvedWeatherLocation(for: location, placemark: placemark) else {
+                    self.finish(requestID, .failure(.reverseGeocodeFailed))
+                    return
+                }
+                self.finish(requestID, .success(WeatherLocationCandidate(
+                    location: resolved, evidence: evidence, horizontalAccuracy: location.horizontalAccuracy
+                )))
             } catch is CancellationError {
-                // The bounded fallback or a newer request owns completion.
+                // A newer selection or explicit cancellation owns completion.
             } catch {
                 guard !Task.isCancelled else { return }
-                self.finish(requestID, .success(fallback))
+                self.finish(requestID, .failure(.reverseGeocodeFailed))
             }
+        }
+    }
+
+    private static func reverseGeocode(_ location: CLLocation) async throws -> [CLPlacemark] {
+        let geocoder = CLGeocoder()
+        return try await withThrowingTaskGroup(of: [CLPlacemark].self) { group in
+            group.addTask { try await geocoder.reverseGeocodeLocation(location) }
+            group.addTask {
+                try await Task.sleep(for: .seconds(WeatherLocationAcquisitionPolicy.reverseGeocodeTimeout))
+                throw CurrentLocationError.reverseGeocodeFailed
+            }
+            guard let result = try await group.next() else { throw CurrentLocationError.reverseGeocodeFailed }
+            group.cancelAll()
+            return result
         }
     }
 }
@@ -212,15 +244,23 @@ extension CurrentLocationService: @preconcurrency CLLocationManagerDelegate {
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let requestID = activeRequestID else { return }
-        guard let location = locations.reversed().first(where: {
+        if let location = locations.reversed().first(where: {
             WeatherLocationAcquisitionPolicy.accepts(timestamp: $0.timestamp, horizontalAccuracy: $0.horizontalAccuracy)
-        }) else {
-            // Keep the short session alive.  A low-quality cached location is
-            // worse than no update because weather would jump to the wrong city.
-            sawInadequateFix = true
+        }) {
+            reverseGeocode(location, evidence: .fresh, requestID: requestID)
             return
         }
-        reverseGeocode(location, requestID: requestID)
+        if let reusable = locations.reversed().first(where: {
+            WeatherLocationAcquisitionPolicy.acceptsRecentReusable(timestamp: $0.timestamp, horizontalAccuracy: $0.horizontalAccuracy)
+        }) {
+            // Continue waiting for a fresh fix.  If none arrives, this result
+            // may only confirm the existing administrative area downstream.
+            if bestRecentReusableLocation == nil || reusable.timestamp > bestRecentReusableLocation!.timestamp {
+                bestRecentReusableLocation = reusable
+            }
+            return
+        }
+        sawInadequateFix = true
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {

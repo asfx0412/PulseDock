@@ -5,6 +5,7 @@ import SwiftUI
 struct RootPanelView: View {
     @ObservedObject var store: MonitorStore
     @ObservedObject var state: PanelState
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         Group {
@@ -17,14 +18,31 @@ struct RootPanelView: View {
         .background {
             ZStack {
                 state.panelBackground.opacity(0.92)
-                Rectangle().fill(.ultraThinMaterial).opacity(0.58)
+                if let image = state.backgroundImage {
+                    GeometryReader { proxy in
+                        switch state.appearanceProfile.placement {
+                        case .fill:
+                            Image(nsImage: image).resizable().aspectRatio(contentMode: .fill).frame(width: proxy.size.width, height: proxy.size.height).clipped()
+                        case .fit:
+                            Image(nsImage: image).resizable().aspectRatio(contentMode: .fit).frame(width: proxy.size.width, height: proxy.size.height)
+                        case .center:
+                            Image(nsImage: image).resizable().aspectRatio(contentMode: .fit).frame(maxWidth: proxy.size.width, maxHeight: proxy.size.height)
+                        }
+                    }
+                    .opacity(max(0, min(1, 1 - state.appearanceProfile.dimming)))
+                    Rectangle().fill(state.panelBackground).opacity(state.appearanceProfile.dimming)
+                }
+                if state.appearanceProfile.frost != .off, !reduceTransparency {
+                    Rectangle().fill(.ultraThinMaterial).opacity(state.appearanceProfile.frost.opacity)
+                }
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: state.expanded ? 24 : 20, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: state.expanded ? 24 : 20).stroke(state.panelAccent.opacity(0.26), lineWidth: 1) }
+        .clipShape(RoundedRectangle(cornerRadius: state.panelRootCornerRadius, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: state.panelRootCornerRadius).stroke(state.panelAccent.opacity(state.appearanceProfile.borderStrength), lineWidth: state.panelBorderWidth) }
         .tint(state.panelAccent)
+        .environmentObject(state)
         .environment(\.locale, Locale(identifier: state.appLanguage.rawValue))
-        .preferredColorScheme(state.isPanelDark ? .dark : nil)
+        .preferredColorScheme(state.appearanceProfile.automaticTextContrast && state.isPanelDark ? .dark : nil)
         .contextMenu {
             Toggle("只在当前桌面显示（关闭则所有桌面）", isOn: $state.currentDesktopOnly)
             Menu("透明度") {
@@ -1057,6 +1075,7 @@ private struct ExpandedPanel: View {
                                 case .cursorLocalUsage: store.newAPIConnectorName = "Cursor 个人额度"
                                 case .glmCodingPlan: store.newAPIConnectorName = "GLM Coding Plan"
                                 case .deepSeekBalance: store.newAPIConnectorName = "DeepSeek"
+                                case .githubCopilotUsage: store.newAPIConnectorName = "GitHub Copilot"
                                 case .customRateLimit: break
                                 }
                             }
@@ -1064,6 +1083,12 @@ private struct ExpandedPanel: View {
                             if store.newAPIConnectorKind == .cursorLocalUsage {
                                 Text("Cursor 只读本机登录会话，不读取或保存 refresh token。")
                                     .font(.system(size: 8.5)).foregroundStyle(.secondary)
+                            } else if store.newAPIConnectorKind == .githubCopilotUsage {
+                                FocusableTextField(text: $store.newAPIConnectorAccountID, placeholder: "GitHub 用户名，例如：octocat").frame(height: 24)
+                                Text("只调用 GitHub 官方个人 Billing API；PAT 仅需 Fine-grained 的 Plan: read。不会读取浏览器 Cookie、本机 Copilot Token 或组织用量。")
+                                    .font(.system(size: 8.5)).foregroundStyle(.secondary)
+                                SecureField(store.credentialVaultUnlocked ? "GitHub Fine-grained PAT（Plan: read）" : "请先解锁凭据保险库后填写 PAT", text: $store.newAPIConnectorKey)
+                                    .textFieldStyle(.roundedBorder).disabled(!store.credentialVaultUnlocked)
                             } else {
                                 FocusableTextField(text: $store.newAPIConnectorEndpoint, placeholder: "官方 HTTPS 探测端点").frame(height: 24)
                                 SecureField(store.credentialVaultUnlocked ? "只读 API Key（保存至统一保险库）" : "请先解锁凭据保险库后填写 API Key", text: $store.newAPIConnectorKey)
@@ -1075,7 +1100,7 @@ private struct ExpandedPanel: View {
                                     .font(.system(size: 8)).foregroundStyle(.secondary)
                                 Spacer()
                                 Button("添加") { store.addAPIConnector() }
-                                    .disabled(store.newAPIConnectorName.isEmpty || (store.newAPIConnectorKind != .cursorLocalUsage && !store.newAPIConnectorEndpoint.hasPrefix("https://")) || (store.newAPIConnectorKind.requiresAPIKey && !store.credentialVaultUnlocked))
+                                    .disabled(store.newAPIConnectorName.isEmpty || (store.newAPIConnectorKind == .githubCopilotUsage && !APIConnectorService.isValidGitHubUsername(store.newAPIConnectorAccountID)) || (store.newAPIConnectorKind != .cursorLocalUsage && store.newAPIConnectorKind != .githubCopilotUsage && !store.newAPIConnectorEndpoint.hasPrefix("https://")) || (store.newAPIConnectorKind.requiresAPIKey && !store.credentialVaultUnlocked))
                             }
                         }
                     }.font(.system(size: 9.5))
@@ -1136,6 +1161,19 @@ private struct ExpandedPanel: View {
                                                         .frame(width: max(2, proxy.size.width * window.usedPercent / 100))
                                                 }
                                             }.frame(height: 4)
+                                        }
+                                        .padding(7)
+                                        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                    }
+                                }
+                            }
+                            if !snapshot.usageMetrics.isEmpty {
+                                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
+                                    ForEach(snapshot.usageMetrics) { metric in
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(metric.title).font(.system(size: 8.5, weight: .semibold)).lineLimit(1)
+                                            Text(metric.usedValue).font(.system(size: 11, weight: .black, design: .rounded)).lineLimit(1)
+                                            Text(metric.detail).font(.system(size: 7.5)).foregroundStyle(.secondary).lineLimit(2)
                                         }
                                         .padding(7)
                                         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -1323,6 +1361,47 @@ private struct ExpandedPanel: View {
                         Text("\(Int(state.themeDepth * 100))%").frame(width: 30, alignment: .trailing)
                     }.font(.system(size: 8.5))
                     Text(state.floatingTheme.description).font(.system(size: 8.5)).foregroundStyle(.secondary)
+                    Divider()
+                    Text("背景与玻璃效果").font(.system(size: 10, weight: .bold))
+                    HStack {
+                        Text("大窗口背景").frame(width: 70, alignment: .leading)
+                        Button(state.appearanceProfile.expandedBackgroundAssetID == nil ? "导入图像…" : "替换图像…") { state.importAppearanceImage(forCompactPanel: false) }
+                        if state.appearanceProfile.expandedBackgroundAssetID != nil {
+                            Button("移除") { state.clearAppearanceImage(forCompactPanel: false) }.foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }.controlSize(.mini)
+                    HStack {
+                        Text("小窗口背景").frame(width: 70, alignment: .leading)
+                        Toggle("跟随大窗口", isOn: $state.appearanceProfile.compactFollowsExpanded).toggleStyle(.checkbox)
+                        if !state.appearanceProfile.compactFollowsExpanded {
+                            Button(state.appearanceProfile.compactBackgroundAssetID == nil ? "导入图像…" : "替换图像…") { state.importAppearanceImage(forCompactPanel: true) }
+                            if state.appearanceProfile.compactBackgroundAssetID != nil { Button("移除") { state.clearAppearanceImage(forCompactPanel: true) }.foregroundStyle(.secondary) }
+                        }
+                    }.controlSize(.mini)
+                    HStack {
+                        Picker("填充", selection: $state.appearanceProfile.placement) {
+                            ForEach(AppearanceBackgroundPlacement.allCases, id: \.self) { Text($0.label).tag($0) }
+                        }.labelsHidden().frame(width: 90)
+                        Picker("磨砂", selection: $state.appearanceProfile.frost) {
+                            ForEach(AppearanceFrostStrength.allCases, id: \.self) { Text("磨砂 \($0.label)").tag($0) }
+                        }.labelsHidden().frame(width: 105)
+                        Spacer()
+                    }.controlSize(.mini)
+                    HStack(spacing: 6) {
+                        Text("背景暗化").frame(width: 48, alignment: .leading)
+                        Slider(value: $state.appearanceProfile.dimming, in: 0...0.85)
+                        Text("卡片").frame(width: 25, alignment: .leading)
+                        Slider(value: $state.appearanceProfile.cardOpacity, in: 0.02...0.28)
+                    }.font(.system(size: 8.5))
+                    HStack {
+                        Toggle("自动保证文字对比度", isOn: $state.appearanceProfile.automaticTextContrast).toggleStyle(.checkbox)
+                        Spacer()
+                        Button("恢复默认") { state.restoreAppearanceDefaults() }.controlSize(.mini)
+                    }.font(.system(size: 8.5))
+                    if !state.appearanceImportStatus.isEmpty { Text(state.appearanceImportStatus).font(.system(size: 8)).foregroundStyle(.secondary) }
+                    Text("仅导入 PNG、JPEG、HEIC（≤25 MB、≤8000 万像素）。导入时将下采样、去除 EXIF/GPS 并复制到 PulseDock 专属本机目录；不会上传。磨砂只作用于背景层，并遵循 macOS 的降低透明度与提高对比度偏好。")
+                        .font(.system(size: 8)).foregroundStyle(.secondary)
                 }
             }
             Card {
@@ -2685,8 +2764,19 @@ private struct DiscoveryChip: View {
 }
 
 private struct Card<Content: View>: View {
+    @EnvironmentObject private var panelState: PanelState
     @ViewBuilder let content: Content
-    var body: some View { content.padding(11).frame(maxWidth: .infinity, alignment: .leading).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous)) }
+    var body: some View {
+        content.padding(11).frame(maxWidth: .infinity, alignment: .leading)
+            .background(panelState.panelCardBackground, in: RoundedRectangle(cornerRadius: panelState.panelCornerRadius, style: .continuous))
+            .overlay {
+                if panelState.floatingTheme == .win97 {
+                    RoundedRectangle(cornerRadius: 0).stroke(Color.white.opacity(0.9), lineWidth: 1)
+                        .padding(1)
+                    RoundedRectangle(cornerRadius: 0).stroke(Color.black.opacity(0.55), lineWidth: 1)
+                }
+            }
+    }
 }
 
 private struct Badge: View {

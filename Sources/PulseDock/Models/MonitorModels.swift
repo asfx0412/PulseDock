@@ -53,8 +53,8 @@ enum AppLanguage: String, CaseIterable, Sendable {
     }
 }
 
-enum FloatingTheme: String, CaseIterable, Sendable {
-    case mist, ocean, lavender, matcha, forest, sunset, sand, midnight, graphite, custom
+enum FloatingTheme: String, CaseIterable, Codable, Sendable {
+    case mist, ocean, lavender, matcha, forest, sunset, sand, midnight, graphite, win97, custom
 
     var label: String {
         switch self {
@@ -67,6 +67,7 @@ enum FloatingTheme: String, CaseIterable, Sendable {
         case .sunset: "晚霞"
         case .sand: "暖沙"
         case .graphite: "石墨"
+        case .win97: "Win97 复古"
         case .custom: "自定义"
         }
     }
@@ -82,6 +83,7 @@ enum FloatingTheme: String, CaseIterable, Sendable {
         case .sunset: Color(red: 0.97, green: 0.83, blue: 0.76)
         case .sand: Color(red: 0.92, green: 0.84, blue: 0.70)
         case .graphite: Color(red: 0.22, green: 0.24, blue: 0.29)
+        case .win97: Color(red: 0.75, green: 0.75, blue: 0.75)
         case .custom: .clear
         }
     }
@@ -97,6 +99,7 @@ enum FloatingTheme: String, CaseIterable, Sendable {
         case .sunset: Color(red: 0.88, green: 0.28, blue: 0.27)
         case .sand: Color(red: 0.62, green: 0.38, blue: 0.11)
         case .graphite: Color(red: 0.76, green: 0.80, blue: 0.88)
+        case .win97: Color(red: 0.0, green: 0.0, blue: 0.50)
         case .custom: Color(red: 0.34, green: 0.56, blue: 0.96)
         }
     }
@@ -112,11 +115,41 @@ enum FloatingTheme: String, CaseIterable, Sendable {
         case .sunset: "温暖浅橙，突出下班与专注提醒。"
         case .sand: "低刺激的暖米色，适合白天办公。"
         case .graphite: "克制深灰，适合深色桌面。"
+        case .win97: "原创经典桌面：灰色底、蓝色强调与立体边框；不含任何 Windows 资产。"
         case .custom: "使用你选择的背景色。"
         }
     }
 
     var isDark: Bool { self == .midnight || self == .graphite || self == .forest }
+}
+
+enum AppearanceBackgroundPlacement: String, CaseIterable, Codable, Sendable {
+    case fill, fit, center
+    var label: String { switch self { case .fill: "填充"; case .fit: "适应"; case .center: "居中" } }
+}
+
+enum AppearanceFrostStrength: String, CaseIterable, Codable, Sendable {
+    case off, light, standard, strong
+    var label: String { switch self { case .off: "关闭"; case .light: "轻度"; case .standard: "标准"; case .strong: "强" } }
+    var opacity: Double { switch self { case .off: 0; case .light: 0.22; case .standard: 0.48; case .strong: 0.72 } }
+}
+
+/// Stored separately from transient panel state so background asset references
+/// stay stable across launches while the original 6.14 color preferences can
+/// migrate without losing the user's current appearance.
+struct AppearanceProfile: Codable, Sendable, Equatable {
+    var theme: FloatingTheme = .mist
+    var expandedBackgroundAssetID: String?
+    var compactBackgroundAssetID: String?
+    var compactFollowsExpanded = true
+    var placement: AppearanceBackgroundPlacement = .fill
+    var dimming: Double = 0.15
+    var frost: AppearanceFrostStrength = .standard
+    var cardOpacity: Double = 0.045
+    var borderStrength: Double = 0.26
+    var automaticTextContrast = true
+
+    static let `default` = AppearanceProfile()
 }
 
 enum CompactPriorityKind: Sendable {

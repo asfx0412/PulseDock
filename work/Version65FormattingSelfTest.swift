@@ -18,6 +18,11 @@ enum Version65FormattingSelfTest {
         require(identity.locationHeadline == "美国 · Los Angeles" && identity.addressFamilyLabel == "IPv6", "exit location presentation")
         require(ActivityFormat.duration(59) == "59秒" && ActivityFormat.duration(3_900) == "1小时5分", "activity duration formatting")
         require(WeatherPresentation.condition(code: 95) == "雷雨" && WeatherPresentation.moonPhase(0.5) == "满月", "weather presentation")
+        var appearance = AppearanceProfile(theme: .win97, expandedBackgroundAssetID: "A", compactBackgroundAssetID: nil, compactFollowsExpanded: true, placement: .fit, dimming: 0.35, frost: .light, cardOpacity: 0.08, borderStrength: 0.5, automaticTextContrast: true)
+        let appearanceData = try! JSONEncoder().encode(appearance)
+        appearance = try! JSONDecoder().decode(AppearanceProfile.self, from: appearanceData)
+        require(appearance.theme == .win97 && appearance.compactFollowsExpanded && appearance.placement == .fit && appearance.frost == .light, "appearance profile must persist window-specific settings")
+        require(FloatingTheme.win97.label == "Win97 复古" && !FloatingTheme.win97.isDark, "Win97 must remain an original light theme")
         let clash = ClashQuotaSnapshot(
             state: .available, name: "test", usedBytes: 80_9 * 1024 * 1024 * 1024 / 10,
             totalBytes: 1024 * 1024 * 1024 * 1024, autoUpdateEnabled: false, message: "fixture"

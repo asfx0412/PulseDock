@@ -334,6 +334,7 @@ final class FloatingPanelController {
 @MainActor
 final class PanelState: ObservableObject {
     private var isRestoringShortcutChoices = false
+    private var isSynchronizingAppearance = false
     private enum Key {
         static let opacity = "PulseDock.opacity"
         static let currentDesktop = "PulseDock.currentDesktopOnly"
@@ -342,6 +343,7 @@ final class PanelState: ObservableObject {
         static let floatingTheme = "PulseDock.floatingTheme"
         static let customBackground = "PulseDock.customBackground"
         static let themeDepth = "PulseDock.themeDepth"
+        static let appearanceProfile = "PulseDock.appearanceProfile"
         static let appLanguage = "PulseDock.appLanguage"
         static let visibilityShortcut = "PulseDock.visibilityShortcut"
         static let expansionShortcut = "PulseDock.expansionShortcut"
@@ -376,14 +378,30 @@ final class PanelState: ObservableObject {
         }
     }
     @Published var floatingTheme: FloatingTheme {
-        didSet { UserDefaults.standard.set(floatingTheme.rawValue, forKey: Key.floatingTheme) }
+        didSet {
+            UserDefaults.standard.set(floatingTheme.rawValue, forKey: Key.floatingTheme)
+            if !isSynchronizingAppearance { appearanceProfile.theme = floatingTheme }
+        }
     }
     @Published var customBackground: Color {
-        didSet { UserDefaults.standard.set(Self.encode(customBackground), forKey: Key.customBackground) }
+        didSet {
+            UserDefaults.standard.set(Self.encode(customBackground), forKey: Key.customBackground)
+            persistAppearanceProfile()
+        }
     }
     @Published var themeDepth: Double {
         didSet { UserDefaults.standard.set(themeDepth, forKey: Key.themeDepth) }
     }
+    @Published var appearanceProfile: AppearanceProfile {
+        didSet {
+            persistAppearanceProfile()
+            guard !isSynchronizingAppearance else { return }
+            isSynchronizingAppearance = true
+            floatingTheme = appearanceProfile.theme
+            isSynchronizingAppearance = false
+        }
+    }
+    @Published var appearanceImportStatus = ""
     @Published var appLanguage: AppLanguage {
         didSet {
             UserDefaults.standard.set(appLanguage.rawValue, forKey: Key.appLanguage)
@@ -407,6 +425,19 @@ final class PanelState: ObservableObject {
     var panelBackground: Color { Self.adjust(floatingTheme == .custom ? customBackground : floatingTheme.background, depth: themeDepth) }
     var panelAccent: Color { floatingTheme.accent }
     var isPanelDark: Bool { Self.isDark(panelBackground) }
+    var panelCardBackground: Color { floatingTheme == .win97 ? Color(red: 0.75, green: 0.75, blue: 0.75) : Color.primary.opacity(appearanceProfile.cardOpacity) }
+    var panelCornerRadius: CGFloat { floatingTheme == .win97 ? 0 : 14 }
+    /// The panel shell intentionally has larger corners than an individual
+    /// card.  The original Windows-inspired theme is the exception: square
+    /// edges are part of the effect, not just its inner card borders.
+    var panelRootCornerRadius: CGFloat { floatingTheme == .win97 ? 0 : (expanded ? 24 : 20) }
+    var panelBorderWidth: CGFloat { floatingTheme == .win97 ? 2 : 1 }
+    var backgroundImage: NSImage? {
+        let id = expanded || !appearanceProfile.compactFollowsExpanded
+            ? (expanded ? appearanceProfile.expandedBackgroundAssetID : appearanceProfile.compactBackgroundAssetID)
+            : appearanceProfile.expandedBackgroundAssetID
+        return AppearanceAssetStore.image(for: id)
+    }
 
     var compactSize: NSSize {
         switch compactDensity {
@@ -421,9 +452,13 @@ final class PanelState: ObservableObject {
         currentDesktopOnly = defaults.object(forKey: Key.currentDesktop) as? Bool ?? false
         showInDock = defaults.object(forKey: Key.showInDock) as? Bool ?? true
         compactDensity = CompactDensity(rawValue: defaults.string(forKey: Key.compactDensity) ?? "") ?? .balanced
-        floatingTheme = FloatingTheme(rawValue: defaults.string(forKey: Key.floatingTheme) ?? "") ?? .mist
+        let legacyTheme = FloatingTheme(rawValue: defaults.string(forKey: Key.floatingTheme) ?? "") ?? .mist
+        floatingTheme = legacyTheme
         customBackground = Self.decode(defaults.string(forKey: Key.customBackground))
         themeDepth = min(1, max(0, defaults.object(forKey: Key.themeDepth) as? Double ?? 0.5))
+        appearanceProfile = defaults.data(forKey: Key.appearanceProfile)
+            .flatMap { try? JSONDecoder().decode(AppearanceProfile.self, from: $0) }
+            ?? AppearanceProfile(theme: legacyTheme)
         appLanguage = AppLanguage(rawValue: defaults.string(forKey: Key.appLanguage) ?? "") ?? .simplifiedChinese
         visibilityShortcut = GlobalShortcut(rawValue: defaults.string(forKey: Key.visibilityShortcut) ?? "") ?? .optionSpace
         expansionShortcut = GlobalShortcut(rawValue: defaults.string(forKey: Key.expansionShortcut) ?? "") ?? .optionShiftSpace
@@ -448,8 +483,52 @@ final class PanelState: ObservableObject {
         isRestoringShortcutChoices = false
     }
 
+    func importAppearanceImage(forCompactPanel: Bool) {
+        let panel = NSOpenPanel()
+        panel.title = forCompactPanel ? "选择小窗口背景图" : "选择大窗口背景图"
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.png, .jpeg, .heic]
+        guard panel.runModal() == .OK, let source = panel.url else { return }
+        do {
+            let id = try AppearanceAssetStore.importImage(at: source, maximumPixelSize: forCompactPanel ? 1_024 : 2_048)
+            let old = forCompactPanel ? appearanceProfile.compactBackgroundAssetID : appearanceProfile.expandedBackgroundAssetID
+            if forCompactPanel {
+                appearanceProfile.compactBackgroundAssetID = id
+                appearanceProfile.compactFollowsExpanded = false
+            } else {
+                appearanceProfile.expandedBackgroundAssetID = id
+            }
+            if old != id { AppearanceAssetStore.remove(id: old) }
+            appearanceImportStatus = "背景已安全导入到 PulseDock 本机存储"
+        } catch {
+            appearanceImportStatus = error.localizedDescription
+        }
+    }
+
+    func clearAppearanceImage(forCompactPanel: Bool) {
+        let id = forCompactPanel ? appearanceProfile.compactBackgroundAssetID : appearanceProfile.expandedBackgroundAssetID
+        if forCompactPanel { appearanceProfile.compactBackgroundAssetID = nil }
+        else { appearanceProfile.expandedBackgroundAssetID = nil }
+        AppearanceAssetStore.remove(id: id)
+    }
+
+    func restoreAppearanceDefaults() {
+        let oldIDs = Set([appearanceProfile.expandedBackgroundAssetID, appearanceProfile.compactBackgroundAssetID].compactMap { $0 })
+        appearanceProfile = .default
+        floatingTheme = .mist
+        customBackground = Self.decode(nil)
+        themeDepth = 0.5
+        oldIDs.forEach { AppearanceAssetStore.remove(id: $0) }
+        appearanceImportStatus = "已恢复默认外观"
+    }
+
     private func notifyConfigurationChanged() {
         NotificationCenter.default.post(name: .pulseDockPanelConfigurationChanged, object: nil)
+    }
+
+    private func persistAppearanceProfile() {
+        guard let data = try? JSONEncoder().encode(appearanceProfile) else { return }
+        UserDefaults.standard.set(data, forKey: Key.appearanceProfile)
     }
 
     private static func encode(_ color: Color) -> String {

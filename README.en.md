@@ -9,7 +9,7 @@
 <p align="center"><a href="README.md">简体中文</a> | <a href="README.en.md">English</a></p>
 
 <p align="center">
-  <a href="https://github.com/asfx0412/PulseDock/releases"><img alt="Version" src="https://img.shields.io/badge/version-6.14.1-2f80ed"></a>
+  <a href="https://github.com/asfx0412/PulseDock/releases"><img alt="Version" src="https://img.shields.io/badge/version-6.15.1-2f80ed"></a>
   <img alt="Platform" src="https://img.shields.io/badge/macOS-26%2B-black">
   <img alt="Architecture" src="https://img.shields.io/badge/Apple%20Silicon-arm64-8a2be2">
   <img alt="Swift" src="https://img.shields.io/badge/Swift-6.2-f05138">
@@ -17,7 +17,7 @@
 
 PulseDock puts AI network health, Codex usage, Clash usage, SSH/GPU devices, app activity, a focus timer, weather, work calendars, and focus audio into a low-distraction floating panel. Data is handled locally where possible. Secrets stay in macOS Keychain and are never written to this repository or configuration exports.
 
-> Current version: **6.14.1**. Builds target Apple Silicon and macOS 26. The updater validates a signed GitHub Release manifest, SHA-256, bundle identity, version, arm64 architecture, and code signature. Packages remain ad-hoc signed, so Gatekeeper may prompt on first launch.
+> Current version: **6.15.1**. Builds target Apple Silicon and macOS 26. The updater validates a signed GitHub Release manifest, SHA-256, bundle identity, version, arm64 architecture, and code signature. Packages remain ad-hoc signed, so Gatekeeper may prompt on first launch.
 
 ## Preview
 
@@ -82,7 +82,7 @@ chmod +x scripts/test.sh scripts/build.sh
 open outputs/PulseDock.app
 ```
 
-The build creates `outputs/PulseDock.app` and `outputs/PulseDock-6.14.1.zip`, including signature, arm64, and extracted-archive validation. GitHub publishing additionally requires the update signing secret in Actions; production distribution still needs Developer ID signing and notarization.
+The build creates `outputs/PulseDock.app` and `outputs/PulseDock-6.15.1.zip`, including signature, arm64, and extracted-archive validation. GitHub publishing additionally requires the update signing secret in Actions; production distribution still needs Developer ID signing and notarization.
 
 ## First-time setup
 

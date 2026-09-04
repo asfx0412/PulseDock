@@ -15,13 +15,74 @@ enum WeatherLocationMode: String, CaseIterable, Sendable {
 enum WeatherLocationAcquisitionPolicy {
     static let sessionTimeout: TimeInterval = 20
     static let reverseGeocodeTimeout: TimeInterval = 5
+    /// A fresh fix may move the weather city.  This remains deliberately
+    /// conservative: a Mac is not a GPS tracker and an old Wi-Fi cache must
+    /// not silently jump a user's weather location.
     static let maximumLocationAge: TimeInterval = 30
     static let maximumHorizontalAccuracyMeters: Double = 5_000
+    /// Core Location can legitimately hand a foreground app its last known
+    /// Wi-Fi position while it is resolving a new one.  It is useful evidence
+    /// to *confirm* an existing city, but is never authority to replace it.
+    static let reusableLocationAge: TimeInterval = 15 * 60
+    static let reusableHorizontalAccuracyMeters: Double = 10_000
 
     static func accepts(timestamp: Date, horizontalAccuracy: Double, now: Date = Date()) -> Bool {
         now.timeIntervalSince(timestamp) <= maximumLocationAge
             && horizontalAccuracy >= 0
             && horizontalAccuracy <= maximumHorizontalAccuracyMeters
+    }
+
+    static func acceptsRecentReusable(timestamp: Date, horizontalAccuracy: Double, now: Date = Date()) -> Bool {
+        now.timeIntervalSince(timestamp) <= reusableLocationAge
+            && horizontalAccuracy >= 0
+            && horizontalAccuracy <= reusableHorizontalAccuracyMeters
+    }
+}
+
+/// The acquisition policy is intentionally explicit.  UI can say whether a
+/// location was newly fixed or merely confirmed from the system's recent
+/// cache, without persisting precise coordinate diagnostics.
+enum WeatherLocationEvidence: String, Codable, Sendable, Equatable {
+    case fresh
+    case recentReusable
+}
+
+struct WeatherLocationCandidate: Sendable, Equatable {
+    var location: WeatherLocation
+    var evidence: WeatherLocationEvidence
+    var horizontalAccuracy: Double
+}
+
+/// Privacy-safe result labels shown in settings diagnostics.  Raw Core
+/// Location domains/codes, coordinates and Wi-Fi observations are never
+/// persisted or rendered as the primary status.
+enum WeatherLocationDiagnosticKind: String, Sendable, Equatable {
+    case fresh
+    case recentReusable
+    case locationUnknown
+    case timedOut
+    case inadequateAccuracy
+    case servicesDisabled
+    case authorizationDenied
+    case authorizationRestricted
+    case reverseGeocodeFailed
+    case cancelled
+    case unexpected
+
+    var label: String {
+        switch self {
+        case .fresh: "已获得新的当前位置"
+        case .recentReusable: "沿用系统最近位置"
+        case .locationUnknown: "系统暂时无法确定位置"
+        case .timedOut: "定位会话超时"
+        case .inadequateAccuracy: "定位精度不足"
+        case .servicesDisabled: "系统定位服务已关闭"
+        case .authorizationDenied: "PulseDock 未获位置权限"
+        case .authorizationRestricted: "系统限制了位置服务"
+        case .reverseGeocodeFailed: "地点名称暂时无法解析"
+        case .cancelled: "定位请求已取消"
+        case .unexpected: "定位服务暂时不可用"
+        }
     }
 }
 
@@ -73,12 +134,33 @@ struct WeatherLocation: Codable, Sendable, Equatable, Identifiable {
 
     var id: String { "\(latitude),\(longitude)" }
     var displayName: String { [name, admin2, admin1, country].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ") }
+
+    var hasResolvedAdministrativeName: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && country != "定位坐标"
+            && !name.hasPrefix("当前位置 ")
+    }
 }
 
 enum WeatherLocationPolicy {
     static func shouldUpdate(current: WeatherLocation, candidate: WeatherLocation, minimumDistanceMeters: Double = 2_000) -> Bool {
+        guard candidate.hasResolvedAdministrativeName else { return false }
         let regionChanged = current.name != candidate.name || current.admin2 != candidate.admin2 || current.admin1 != candidate.admin1
         guard regionChanged else { return false }
+
+        // A city-only location left by an earlier manual search or an older
+        // Core Location response must be allowed to gain its district/province
+        // immediately.  This is an address-quality repair, not a movement, so
+        // the normal 2 km anti-jitter threshold must not block it.  The shared
+        // municipality requirement prevents a nearby but unrelated result
+        // from being treated as an upgrade.
+        if isAdministrativeEnrichment(current: current, candidate: candidate) { return true }
+
+        // Conversely, a later coarse response such as "深圳市" must never
+        // overwrite an existing "南山区 · 深圳市 · 广东省 · 中国", even after
+        // real movement inside the same municipality.
+        if isAdministrativeDowngrade(current: current, candidate: candidate) { return false }
+
         let radius = 6_371_000.0
         let lat1 = current.latitude * .pi / 180
         let lat2 = candidate.latitude * .pi / 180
@@ -88,6 +170,65 @@ enum WeatherLocationPolicy {
             + cos(lat1) * cos(lat2) * sin(deltaLon / 2) * sin(deltaLon / 2)
         let distance = radius * 2 * atan2(sqrt(a), sqrt(max(0, 1 - a)))
         return distance >= minimumDistanceMeters
+    }
+
+    private static func isAdministrativeEnrichment(current: WeatherLocation, candidate: WeatherLocation) -> Bool {
+        candidate.administrativeFieldCount > current.administrativeFieldCount
+            && sharesMunicipality(current: current, candidate: candidate)
+    }
+
+    private static func isAdministrativeDowngrade(current: WeatherLocation, candidate: WeatherLocation) -> Bool {
+        candidate.administrativeFieldCount < current.administrativeFieldCount
+            && sharesMunicipality(current: current, candidate: candidate)
+    }
+
+    private static func sharesMunicipality(current: WeatherLocation, candidate: WeatherLocation) -> Bool {
+        let currentNames = Set([current.name, current.admin2].compactMap(normalizedAdministrativeName))
+        let candidateNames = Set([candidate.name, candidate.admin2].compactMap(normalizedAdministrativeName))
+        guard !currentNames.isEmpty, !candidateNames.isEmpty,
+              !currentNames.isDisjoint(with: candidateNames) else { return false }
+        return normalizedAdministrativeName(current.country) == normalizedAdministrativeName(candidate.country)
+    }
+
+    private static func normalizedAdministrativeName(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    /// Cached fixes can validate an existing choice but cannot select a new
+    /// city.  This prevents a stale macOS location from replacing a manually
+    /// selected city after travel or a network transition.
+    static func mayConfirmExisting(current: WeatherLocation, candidate: WeatherLocation, maximumDistanceMeters: Double = 12_000) -> Bool {
+        guard candidate.hasResolvedAdministrativeName else { return false }
+        let sameAdministrativeArea = current.name == candidate.name
+            || (current.admin2 != nil && current.admin2 == candidate.admin2 && current.admin1 == candidate.admin1)
+            || (current.admin1 != nil && current.admin1 == candidate.admin1 && current.country == candidate.country)
+        guard sameAdministrativeArea else { return false }
+        return distanceMeters(from: current, to: candidate) <= maximumDistanceMeters
+    }
+
+    static func distanceMeters(from current: WeatherLocation, to candidate: WeatherLocation) -> Double {
+        let radius = 6_371_000.0
+        let lat1 = current.latitude * .pi / 180
+        let lat2 = candidate.latitude * .pi / 180
+        let deltaLat = (candidate.latitude - current.latitude) * .pi / 180
+        let deltaLon = (candidate.longitude - current.longitude) * .pi / 180
+        let a = sin(deltaLat / 2) * sin(deltaLat / 2)
+            + cos(lat1) * cos(lat2) * sin(deltaLon / 2) * sin(deltaLon / 2)
+        return radius * 2 * atan2(sqrt(a), sqrt(max(0, 1 - a)))
+    }
+}
+
+private extension WeatherLocation {
+    /// `name` is always the most specific known level, then city, province and
+    /// country.  Counting known levels is only used to prevent information
+    /// loss or permit safe same-city enrichment; it never infers a district.
+    var administrativeFieldCount: Int {
+        [name, admin2, admin1, country]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .count
     }
 }
 
