@@ -1,5 +1,7 @@
 # PulseDock 测试说明
 
+6.15.2 增加 `Version6152ActivitySelfTest`：切换前时段归属、十次小数秒采样不膨胀、睡眠恢复和长时间停顿不补记。视觉验收检查 Win98 蓝色标题栏、立体按下态、内凹面板和底部状态栏，以及恢复普通主题后的背景设置。
+
 ## macOS 当前自动化
 
 `./scripts/test.sh` 是当前 Command Line Tools 环境的权威离线门禁。它覆盖：

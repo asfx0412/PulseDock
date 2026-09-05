@@ -21,6 +21,11 @@ compile_and_run() {
   "$TEST_ROOT/$output"
 }
 
+compile_and_run activity_6152 \
+  work/Version6152ActivitySelfTest.swift \
+  Sources/PulseDock/Services/AppActivityTracker.swift \
+  Sources/PulseDock/Models/ProductivityModels.swift
+
 compile_and_run interaction \
   work/Version612InteractionSelfTest.swift \
   Sources/PulseDock/App/FocusableFloatingPanel.swift \

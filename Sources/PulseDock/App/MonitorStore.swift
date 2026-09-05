@@ -1483,10 +1483,12 @@ final class MonitorStore: ObservableObject {
     var pomodoroTimeLabel: String { String(format: "%02d:%02d", max(0, pomodoroSecondsRemaining) / 60, max(0, pomodoroSecondsRemaining) % 60) }
     var focusTimeTodayLabel: String { "\(focusSecondsToday / 3_600)小时\((focusSecondsToday % 3_600) / 60)分" }
     var activeTimeTodayLabel: String { "\(activeWorkSecondsToday / 3_600)小时\((activeWorkSecondsToday % 3_600) / 60)分" }
-    var topActivity: AppActivityRanking? { activityRankings.first }
+    var topActivity: AppActivityRanking? {
+        activityTracker.rankings(days: 1, endingAt: now, excluded: excludedApplicationIDs).first
+    }
     var topActivityCompactLabel: String {
         guard let topActivity else { return "等待统计" }
-        return "#1 \(topActivity.name) · \(topActivity.durationLabel)"
+        return "今日 #1 \(topActivity.name) · \(topActivity.durationLabel)"
     }
     var compactPriority: CompactPriority {
         if let failed = remoteSnapshots.values.first(where: { $0.health == .offline || $0.health == .degraded }),
@@ -2090,16 +2092,24 @@ final class MonitorStore: ObservableObject {
     private func observeWorkspaceSession() {
         guard workspaceObservers.isEmpty else { return }
         let center = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.activeApplication = ActiveApplicationMonitor.snapshot(idleThreshold: Double(self.idleThresholdSeconds), sessionActive: self.sessionActive)
+                self.activityTracker.sample(self.activeApplication, excluded: self.excludedApplicationIDs)
+                self.refreshActivityRankings()
+            }
+        })
         let inactiveNames: [Notification.Name] = [NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.screensDidSleepNotification]
         let activeNames: [Notification.Name] = [NSWorkspace.sessionDidBecomeActiveNotification, NSWorkspace.screensDidWakeNotification]
         workspaceObservers += inactiveNames.map { name in
             center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.sessionActive = false }
+                MainActor.assumeIsolated { self?.sessionActive = false; self?.activityTracker.resetSampling() }
             }
         }
         workspaceObservers += activeNames.map { name in
             center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.sessionActive = true }
+                MainActor.assumeIsolated { self?.sessionActive = true; self?.activityTracker.resetSampling() }
             }
         }
     }

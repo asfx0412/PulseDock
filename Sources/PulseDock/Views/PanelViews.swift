@@ -17,8 +17,8 @@ struct RootPanelView: View {
         }
         .background {
             ZStack {
-                state.panelBackground.opacity(0.92)
-                if let image = state.backgroundImage {
+                state.panelBackground.opacity(state.floatingTheme == .win97 ? 1 : 0.92)
+                if state.floatingTheme != .win97, let image = state.backgroundImage {
                     GeometryReader { proxy in
                         switch state.appearanceProfile.placement {
                         case .fill:
@@ -32,17 +32,19 @@ struct RootPanelView: View {
                     .opacity(max(0, min(1, 1 - state.appearanceProfile.dimming)))
                     Rectangle().fill(state.panelBackground).opacity(state.appearanceProfile.dimming)
                 }
-                if state.appearanceProfile.frost != .off, !reduceTransparency {
+                if state.floatingTheme != .win97, state.appearanceProfile.frost != .off, !reduceTransparency {
                     Rectangle().fill(.ultraThinMaterial).opacity(state.appearanceProfile.frost.opacity)
                 }
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: state.panelRootCornerRadius, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: state.panelRootCornerRadius).stroke(state.panelAccent.opacity(state.appearanceProfile.borderStrength), lineWidth: state.panelBorderWidth) }
+        .overlay { if state.floatingTheme == .win97 { ClassicBevel() } }
         .tint(state.panelAccent)
+        .modifier(ClassicControls(enabled: state.floatingTheme == .win97))
         .environmentObject(state)
         .environment(\.locale, Locale(identifier: state.appLanguage.rawValue))
-        .preferredColorScheme(state.appearanceProfile.automaticTextContrast && state.isPanelDark ? .dark : nil)
+        .preferredColorScheme(state.floatingTheme == .win97 ? .light : (state.appearanceProfile.automaticTextContrast && state.isPanelDark ? .dark : nil))
         .contextMenu {
             Toggle("只在当前桌面显示（关闭则所有桌面）", isOn: $state.currentDesktopOnly)
             Menu("透明度") {
@@ -81,6 +83,9 @@ private struct CompactPanel: View {
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(store.workStatus.label).font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(state.floatingTheme == .win97 ? Color.white : Color.primary)
+                        .padding(.horizontal, state.floatingTheme == .win97 ? 4 : 0)
+                        .background(state.floatingTheme == .win97 ? Color(red: 0, green: 0, blue: 0.5) : Color.clear)
                     Text(store.topActivityCompactLabel).font(.system(size: 8.5)).foregroundStyle(.secondary).lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -137,6 +142,7 @@ private struct CompactPanel: View {
 }
 
 private struct CompactChip: View {
+    @EnvironmentObject private var panelState: PanelState
     let icon: String
     let value: String
     let tint: Color
@@ -147,7 +153,8 @@ private struct CompactChip: View {
         }
         .foregroundStyle(tint)
         .padding(.horizontal, 6).padding(.vertical, 3)
-        .background(Color.primary.opacity(0.055), in: Capsule())
+        .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: panelState.floatingTheme == .win97 ? 0 : 12))
+        .overlay { if panelState.floatingTheme == .win97 { ClassicBevel(sunken: true) } }
     }
 }
 
@@ -166,12 +173,28 @@ private struct ExpandedPanel: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            header
+            if state.floatingTheme == .win97 {
+                HStack {
+                    PanelDragHandle(onDoubleClick: { state.expanded = false }).frame(width: 18, height: 22)
+                    Text("PulseDock — v\(appVersion)").font(.system(size: 12, weight: .bold))
+                    Spacer()
+                    Button("收起") { state.expanded = false }.foregroundStyle(.black)
+                }.foregroundStyle(.white).padding(4).background(Color(red: 0, green: 0, blue: 0.5))
+            } else { header }
+            if state.floatingTheme == .win97 {
+                HStack(spacing: 3) {
+                    ForEach(Array(["工作台", "洞察", "设备", "时间线", "诊断", "设置", "声音"].enumerated()), id: \.offset) { index, title in
+                        Button(title) { tab = index }
+                            .buttonStyle(PanelButtonStyle(classic: true, selected: tab == index))
+                    }
+                }.font(.system(size: 11))
+            } else {
             Picker("页面", selection: $tab) {
                 Text("工作台").tag(0); Text("洞察").tag(1); Text("设备").tag(2)
                 Text("时间线").tag(3); Text("诊断").tag(4); Text("设置").tag(5); Text("声音").tag(6)
             }
             .pickerStyle(.segmented).labelsHidden()
+            }
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 0) {
                     if tab == 0 { dashboard }
@@ -183,6 +206,11 @@ private struct ExpandedPanel: View {
                     else { sounds }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if state.floatingTheme == .win97 {
+                Text("当前前台：\(store.activeApplication.label)")
+                    .font(.system(size: 9)).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(4).overlay(ClassicBevel(sunken: true))
             }
         }
         .padding(15)
@@ -257,7 +285,8 @@ private struct ExpandedPanel: View {
                     }
                     HStack {
                         Image(systemName: "app.fill").foregroundStyle(.secondary)
-                        Text(store.activeApplication.label).font(.system(size: 10, weight: .medium))
+                        Text("当前前台：\(store.activeApplication.label)").font(.system(size: 10, weight: .medium))
+                            .help("按当前获得焦点的应用计时；后台应用不计时。应用内的标签页不单独识别。")
                         Spacer()
                         Text("今日有效 \(store.activeTimeTodayLabel)").font(.system(size: 8.5)).foregroundStyle(.secondary)
                     }
@@ -607,12 +636,14 @@ private struct ExpandedPanel: View {
             Card {
                 VStack(alignment: .leading, spacing: 9) {
                     HStack {
-                        Label("应用活跃排行榜", systemImage: "chart.bar.fill").font(.system(size: 12, weight: .bold))
+                        Label("有效前台时长排行", systemImage: "chart.bar.fill").font(.system(size: 12, weight: .bold))
                         Spacer()
                         Picker("范围", selection: $store.activityRangeDays) {
                             Text("今日").tag(1); Text("7 天").tag(7); Text("30 天").tag(30)
                         }.pickerStyle(.segmented).labelsHidden().frame(width: 155)
                     }
+                    Text("当前前台：\(store.activeApplication.label)")
+                        .font(.system(size: 9)).foregroundStyle(.secondary)
                     if store.activityRankings.isEmpty {
                         Text("开始使用应用后，这里会按有效使用时长生成排行。锁屏、睡眠和超过空闲阈值的时间不会计入。")
                             .font(.system(size: 9)).foregroundStyle(.secondary)
@@ -2771,11 +2802,48 @@ private struct Card<Content: View>: View {
             .background(panelState.panelCardBackground, in: RoundedRectangle(cornerRadius: panelState.panelCornerRadius, style: .continuous))
             .overlay {
                 if panelState.floatingTheme == .win97 {
-                    RoundedRectangle(cornerRadius: 0).stroke(Color.white.opacity(0.9), lineWidth: 1)
-                        .padding(1)
-                    RoundedRectangle(cornerRadius: 0).stroke(Color.black.opacity(0.55), lineWidth: 1)
+                    ClassicBevel(sunken: true)
                 }
             }
+    }
+}
+
+private struct ClassicBevel: View {
+    var sunken = false
+    var body: some View {
+        GeometryReader { proxy in
+            Path { p in
+                p.move(to: CGPoint(x: 0, y: proxy.size.height)); p.addLine(to: .zero)
+                p.addLine(to: CGPoint(x: proxy.size.width, y: 0))
+            }.stroke(sunken ? Color.gray : Color.white, lineWidth: 2)
+            Path { p in
+                p.move(to: CGPoint(x: 0, y: proxy.size.height)); p.addLine(to: CGPoint(x: proxy.size.width, y: proxy.size.height))
+                p.addLine(to: CGPoint(x: proxy.size.width, y: 0))
+            }.stroke(sunken ? Color.white : Color.gray, lineWidth: 2)
+        }.allowsHitTesting(false)
+    }
+}
+
+private struct PanelButtonStyle: ButtonStyle {
+    var classic: Bool
+    var selected = false
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration: Configuration) -> some View {
+        if classic {
+            configuration.label.padding(.horizontal, 7).padding(.vertical, 4)
+                .background(Color(white: selected ? 0.85 : 0.75))
+                .overlay(ClassicBevel(sunken: configuration.isPressed || selected))
+                .opacity(enabled ? 1 : 0.45)
+                .offset(x: configuration.isPressed ? 1 : 0, y: configuration.isPressed ? 1 : 0)
+        } else { configuration.label.opacity(configuration.isPressed ? 0.6 : 1) }
+    }
+}
+
+private struct ClassicControls: ViewModifier {
+    var enabled: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        if enabled { content.buttonStyle(PanelButtonStyle(classic: true)) }
+        else { content }
     }
 }
 

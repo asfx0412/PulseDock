@@ -1,5 +1,7 @@
 # PulseDock
 
+Current version: **6.15.2**. This update improves foreground time accounting and the Win98 classic theme; the current source builds `outputs/PulseDock-6.15.2.zip`.
+
 <p align="center">
   <img src="Resources/PulseDock.png" width="112" alt="PulseDock icon">
 </p>

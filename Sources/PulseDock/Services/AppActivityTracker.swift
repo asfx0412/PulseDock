@@ -8,6 +8,13 @@ final class AppActivityTracker {
 
     private var ledger = Ledger()
     private var lastSampleAt: Date?
+    private var lastSnapshot: ActiveApplicationSnapshot?
+    private var fractions: [String: Double] = [:]
+
+    func resetSampling() {
+        lastSampleAt = nil
+        lastSnapshot = nil
+    }
     private let fileURL: URL
 
     init(fileURL: URL? = nil) {
@@ -21,15 +28,25 @@ final class AppActivityTracker {
     }
 
     func sample(_ snapshot: ActiveApplicationSnapshot, at now: Date = Date(), excluded: Set<String>) {
-        defer { lastSampleAt = now }
-        guard let previous = lastSampleAt else { return }
+        let next = snapshot
+        defer { lastSampleAt = now; lastSnapshot = next }
+        guard let previous = lastSampleAt, let snapshot = lastSnapshot else { return }
         let elapsed = now.timeIntervalSince(previous)
         // Do not count sleep, clock jumps, debugger pauses, or time while PulseDock was stopped.
         guard elapsed > 0, elapsed <= 5, snapshot.isTrackable,
               !snapshot.bundleIdentifier.isEmpty, !excluded.contains(snapshot.bundleIdentifier) else { return }
 
-        let seconds = max(1, Int(elapsed.rounded()))
         let day = ChinaHolidayCalendar.dateKey(now)
+        // Fractional intervals from activation notifications must not each
+        // round up to a second. Charge the interval to its previous owner.
+        func wholeSeconds(_ suffix: String, duration: Double) -> Int {
+            let key = day + snapshot.bundleIdentifier + suffix
+            let total = fractions[key, default: 0] + duration
+            let whole = Int(total)
+            fractions[key] = total - Double(whole)
+            return whole
+        }
+        let seconds = wholeSeconds("foreground", duration: elapsed)
         var entries = ledger.days[day] ?? [:]
         var entry = entries[snapshot.bundleIdentifier] ?? AppActivityEntry(
             bundleIdentifier: snapshot.bundleIdentifier,
@@ -39,7 +56,9 @@ final class AppActivityTracker {
         )
         entry.name = snapshot.name
         entry.foregroundSeconds += seconds
-        if snapshot.isEngaged { entry.engagedSeconds += seconds }
+        if snapshot.isEngaged {
+            entry.engagedSeconds += wholeSeconds("engaged", duration: elapsed)
+        }
         entries[snapshot.bundleIdentifier] = entry
         ledger.days[day] = entries
         prune(relativeTo: now)

@@ -67,7 +67,7 @@ enum FloatingTheme: String, CaseIterable, Codable, Sendable {
         case .sunset: "晚霞"
         case .sand: "暖沙"
         case .graphite: "石墨"
-        case .win97: "Win97 复古"
+        case .win97: "Win98 经典"
         case .custom: "自定义"
         }
     }
@@ -115,7 +115,7 @@ enum FloatingTheme: String, CaseIterable, Codable, Sendable {
         case .sunset: "温暖浅橙，突出下班与专注提醒。"
         case .sand: "低刺激的暖米色，适合白天办公。"
         case .graphite: "克制深灰，适合深色桌面。"
-        case .win97: "原创经典桌面：灰色底、蓝色强调与立体边框；不含任何 Windows 资产。"
+        case .win97: "Win98 经典：蓝色标题栏、灰色面板、立体按钮；采用不透明背景，暂不应用背景图与磨砂。"
         case .custom: "使用你选择的背景色。"
         }
     }

@@ -22,7 +22,7 @@ enum Version65FormattingSelfTest {
         let appearanceData = try! JSONEncoder().encode(appearance)
         appearance = try! JSONDecoder().decode(AppearanceProfile.self, from: appearanceData)
         require(appearance.theme == .win97 && appearance.compactFollowsExpanded && appearance.placement == .fit && appearance.frost == .light, "appearance profile must persist window-specific settings")
-        require(FloatingTheme.win97.label == "Win97 复古" && !FloatingTheme.win97.isDark, "Win97 must remain an original light theme")
+        require(FloatingTheme.win97.label == "Win98 经典" && !FloatingTheme.win97.isDark, "legacy theme preference must resolve to Win98")
         let clash = ClashQuotaSnapshot(
             state: .available, name: "test", usedBytes: 80_9 * 1024 * 1024 * 1024 / 10,
             totalBytes: 1024 * 1024 * 1024 * 1024, autoUpdateEnabled: false, message: "fixture"

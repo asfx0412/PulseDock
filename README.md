@@ -1,5 +1,7 @@
 # PulseDock
 
+当前版本：**6.15.2**。本次改进前台计时归属和 Win98 经典主题；当前源码构建输出 `outputs/PulseDock-6.15.2.zip`。
+
 <p align="center">
   <img src="Resources/PulseDock.png" width="112" alt="PulseDock 图标">
 </p>

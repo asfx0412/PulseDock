@@ -322,7 +322,7 @@ final class FloatingPanelController {
     }
 
     private func applyConfiguration() {
-        panel.alphaValue = state.opacity
+        panel.alphaValue = state.floatingTheme == .win97 ? 1 : state.opacity
         panel.level = .floating
         panel.collectionBehavior = state.currentDesktopOnly
             ? [.fullScreenAuxiliary, .stationary]
@@ -379,6 +379,7 @@ final class PanelState: ObservableObject {
     }
     @Published var floatingTheme: FloatingTheme {
         didSet {
+            notifyConfigurationChanged()
             UserDefaults.standard.set(floatingTheme.rawValue, forKey: Key.floatingTheme)
             if !isSynchronizingAppearance { appearanceProfile.theme = floatingTheme }
         }
@@ -422,7 +423,7 @@ final class PanelState: ObservableObject {
     }
     @Published var shortcutRegistrationStatus = "正在注册全局快捷键…"
 
-    var panelBackground: Color { Self.adjust(floatingTheme == .custom ? customBackground : floatingTheme.background, depth: themeDepth) }
+    var panelBackground: Color { floatingTheme == .win97 ? floatingTheme.background : Self.adjust(floatingTheme == .custom ? customBackground : floatingTheme.background, depth: themeDepth) }
     var panelAccent: Color { floatingTheme.accent }
     var isPanelDark: Bool { Self.isDark(panelBackground) }
     var panelCardBackground: Color { floatingTheme == .win97 ? Color(red: 0.75, green: 0.75, blue: 0.75) : Color.primary.opacity(appearanceProfile.cardOpacity) }
