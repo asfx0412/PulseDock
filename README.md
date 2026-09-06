@@ -1,80 +1,109 @@
 # PulseDock
 
-当前版本：**6.15.2**。本次改进前台计时归属和 Win98 经典主题；当前源码构建输出 `outputs/PulseDock-6.15.2.zip`。
+<p align="center"><img src="Resources/PulseDock.png" width="112" alt="PulseDock 图标"></p>
 
-<p align="center">
-  <img src="Resources/PulseDock.png" width="112" alt="PulseDock 图标">
-</p>
+<p align="center"><strong>给 AI 开发者的 macOS 工作状态驾驶舱</strong></p>
 
-<p align="center">
-  面向 AI 开发者的 macOS 轻量工作状态浮窗
-</p>
+<p align="center">在一个低干扰浮窗里，看清现在是否适合专注、调试或继续跑任务。</p>
 
 <p align="center"><a href="README.md">简体中文</a> | <a href="README.en.md">English</a></p>
 
 <p align="center">
-  <a href="https://github.com/asfx0412/PulseDock/releases"><img alt="Version" src="https://img.shields.io/badge/version-6.15.1-2f80ed"></a>
+  <a href="https://github.com/asfx0412/PulseDock/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/asfx0412/PulseDock?display_name=tag&amp;sort=semver"></a>
   <img alt="Platform" src="https://img.shields.io/badge/macOS-26%2B-black">
   <img alt="Architecture" src="https://img.shields.io/badge/Apple%20Silicon-arm64-8a2be2">
   <img alt="Swift" src="https://img.shields.io/badge/Swift-6.2-f05138">
 </p>
 
-PulseDock 将 AI 网络健康、Codex 额度、Clash 用量、SSH/GPU 设备、应用活跃度、番茄钟、天气、工作日历和专注声音集中在一个低干扰浮窗中。数据尽量在本机处理，秘密保存在 macOS Keychain，不会写入仓库或导出配置。
+<p align="center"><a href="https://github.com/asfx0412/PulseDock/releases/latest">下载最新版本</a> · <a href="#三分钟开始">三分钟开始</a> · <a href="#核心优势">了解核心优势</a></p>
 
-> 当前版本：**6.15.1**。安装包面向 Apple Silicon 和 macOS 26。更新器会校验 GitHub Release 清单的 Ed25519 签名、SHA-256、Bundle ID、版本、arm64 与代码签名；仍为 ad-hoc 签名，首次运行可能出现 Gatekeeper 提示。
+PulseDock 面向同时关心 AI 服务、远程设备和专注节奏的 macOS 开发者。它把当前前台应用、专注计时、网络与额度状态、天气和可选设备信号放进一个可收起的浮窗；默认只显示此刻值得处理的信息。数据尽量在本机处理，秘密保存在 macOS Keychain，不会写入仓库或导出配置。
 
-## 界面预览
+> **适合谁：** 使用 Apple Silicon Mac、在本机使用 Codex，并可能需要查看网络、远程 SSH/GPU 或专注状态的开发者。它不是通用的团队监控平台，也不会读取网页、聊天、窗口标题、输入内容或文件。
 
-<p align="center">
-  <img src="docs/images/pulsedock-overview.png" width="620" alt="PulseDock 工作台脱敏示例">
-</p>
+## 核心优势
 
-<p align="center"><sub>工作台脱敏示例；位置、应用名称和服务额度为演示数据。</sub></p>
-
-## 主要功能
-
-| 功能域 | 能做什么 | 数据与隐私 |
+| 优势 | 解决的问题 | PulseDock 如何做到 |
 |---|---|---|
-| 工作台 | 上班/下班状态、当前应用、天气、番茄钟、AI 网络、额度和系统指标 | 紧凑浮窗只显示当前最需关注的信息 |
-| 洞察 | 今日/7 天/30 天应用排行、Codex Token 活动、节假日和趋势 | 不读取窗口标题、网页、聊天、键盘内容或文件 |
-| 设备 | 多 SSH 主机、Load、GPU 显存、温度/功耗、Slurm 任务和 Codex 端点证据 | 复用 `~/.ssh/config` 和 ssh-agent，不保存私钥或密码 |
-| 时间线 | 记录网络、设备、额度、热风险、Clash 和番茄钟的发生/恢复 | 本地持久化，不上传遥测 |
-| 诊断 | DNS、TLS、代理端口、OpenAI/Codex 端点和界面响应监测 | 可复制报告，但不包含 API Key、密码或未脱敏命令 |
-| 设置 | 工作时间、快捷键、主题、天气、Clash、API、SSH、飞书和语言 | 秘密集中保存在 Keychain 统一保险库 |
-| 声音 | 24 条 CC0 环境音、工作音乐、网络广播、收藏、定时和播放模式 | 默认不播放，不登录音乐账号，不建立离线音频库 |
+| **一眼掌握，而非多开十个页面** | 编码、跑任务、远程调试时，很难判断当前该处理什么 | 工作台把前台应用、工作状态、番茄钟、AI 网络、额度和系统提示聚合成低干扰浮窗；需要时再展开细节 |
+| **为 AI 开发工作流而生** | 配额、网络可达性和远程 GPU 往往分散在终端、网页和多个工具中 | 读取本机 Codex 只读状态，可选接入 Clash/Mihomo、SSH/GPU、Slurm 与 API 额度；每项能力按需开启 |
+| **本地优先，边界说清楚** | 监控工具最容易让人担心隐私与凭据安全 | 活跃度只到应用层；敏感值进 Keychain；时间线在本机；诊断和导出会排除 API Key、密码和未脱敏命令 |
 
-## 运行要求
+## 你可以用它做什么
 
-- Apple Silicon Mac（arm64）；
-- macOS 26.0 或更高版本；
-- 如果从源码构建：Xcode Command Line Tools；
-- 如果需要 Codex 额度：本机已安装并登录 Codex CLI；
-- 如果需要 SSH/GPU：目标主机已在 `~/.ssh/config` 中配置，且可以通过密钥非交互登录。
+### 现在：一个不打断工作的状态面板
 
-Intel Mac 和旧版 macOS 目前未纳入构建与测试范围。
+- 看当前前台应用、工作/下班状态、天气、番茄钟、AI 网络、额度和系统指标；
+- 用 `⌥ Space` 显示或隐藏浮窗，用 `⌥ ⇧ Space` 在紧凑与完整视图间切换；
+- 当数据暂时不可用时保留最后成功结果并显示刷新状态，而不是把一次波动直接当成故障。
 
-## 安装
+### 需要时：展开为开发环境概览
 
-### 从 GitHub Releases 安装
+- **洞察：** 今日、7 天、30 天的应用活跃度与 Codex Token 活动；
+- **设备：** 可选的 SSH 主机、负载、GPU 显存、温度/功耗和 Slurm 任务；
+- **诊断：** DNS、TLS、代理端口、OpenAI/Codex 端点和界面响应的可复制证据；
+- **时间线：** 网络、设备、额度、热风险、Clash 与番茄钟的发生和恢复记录；
+- **声音：** CC0 环境音、工作音乐和网络广播，默认静音、按需播放。
 
-1. 打开 [Releases](https://github.com/asfx0412/PulseDock/releases)，下载最新的 `PulseDock-<版本>.zip`。
-2. 解压 ZIP，将 `PulseDock.app` 拖入“应用程序”。
-3. 首次运行时，在 Finder 中右键 `PulseDock.app` 并选择“打开”。
-4. 如果系统仍阻止运行，前往“系统设置 → 隐私与安全性”，确认应用来源后选择“仍要打开”。
-5. 如果需要番茄钟、下班或热风险提醒，请允许通知权限。
+## 工作方式
 
-如果你已确认 ZIP 来自本项目的 GitHub Release，但 Gatekeeper 仍组织运行，可在“终端”执行以移除该 App 的下载隔离标记：
+<p align="center"><img src="docs/images/pulsedock-value-map.svg" width="800" alt="PulseDock 将开发工作流信号汇入浮窗，帮助判断下一步"></p>
+
+<p align="center"><sub>产品价值图，不是界面截图。当前稳定版本的功能、安装包和变更请以 <a href="https://github.com/asfx0412/PulseDock/releases/latest">最新 Release</a> 与更新日志为准。</sub></p>
+
+## 三分钟开始
+
+### 1. 安装
+
+1. 打开 [最新 Release](https://github.com/asfx0412/PulseDock/releases/latest)，下载 `PulseDock-<版本>.zip`。
+2. 解压后，将 `PulseDock.app` 拖入“应用程序”文件夹。
+3. 首次运行时，在 Finder 中按住 Control 点按 `PulseDock.app`，选择“打开”。
+4. 若 macOS 仍阻止运行，请在“系统设置 → 隐私与安全性”确认来源后点“仍要打开”。
+5. 需要番茄钟、下班或热风险提醒时，再允许通知权限。
+
+安装包当前为 ad-hoc 签名，尚未完成 Apple 公证。确认 ZIP 来自本项目的 GitHub Release 后，如 Gatekeeper 仍阻止运行，可在“终端”执行：
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/PulseDock.app
 open /Applications/PulseDock.app
 ```
 
-这仅适用于你信任的发布包，不要对来源不明的 App 执行。这是未公证安装包的临时处理方案；正式发布版仍应使用 Developer ID 签名与 Apple 公证。
+这只适用于你信任的发布包；不要对来源不明的 App 执行。升级时请先通过浮窗右键菜单或菜单栏完全退出旧版，再替换 `PulseDock.app`。关闭浮窗不等于退出应用。
 
-升级时请先通过浮窗右键菜单或菜单栏完全退出旧版，再替换 `PulseDock.app`。关闭浮窗不等于退出应用。
+### 2. 先使用默认能力
 
-### 从源码构建
+无需填写密钥即可使用浮窗、前台应用记录、番茄钟、手动天气与本机基础指标。Codex、远程设备、Clash/Mihomo、API 额度和飞书均为可选连接器：只在你主动配置后才会读取或访问相应服务。
+
+### 3. 按需接入开发环境
+
+- **Codex 额度：** 本机安装并登录 Codex CLI 后，PulseDock 通过本机 `app-server` 的只读接口显示额度窗口与 Token 活动，不读取、导出或刷新登录 Token，也不消耗重置券。
+- **天气与位置：** 默认使用手动地点，不根据公网 IP 或代理节点改变城市；只有你主动开启“自动跟随当前位置”才会请求定位权限。定位失败时保留上次有效天气。
+- **SSH/GPU：** 先在终端确认 `ssh <Host 别名>` 可通过密钥非交互登录，再在“设备”页添加同一别名。PulseDock 使用 `BatchMode=yes`，不会在后台弹出密码框。
+- **Clash/Mihomo：** 仅连接本机兼容元数据或回环 Controller/本机 Unix Socket；订阅 URL 不会显示或导出。
+- **API 额度与飞书：** 仅在设置页填写，保存后写入 Keychain；配置导出、时间线和可复制诊断不包含秘密。
+
+## 功能边界与隐私
+
+| 能力 | 明确边界 |
+|---|---|
+| 应用活跃度 | 只记录 macOS 前台应用层级；不读取窗口标题、网页、ChatGPT/Codex 页面、聊天内容、键盘输入或文件 |
+| 凭据 | API Key、Webhook、Controller Secret 等存于 macOS Keychain；编辑时留在内存，保存时才写入 |
+| 数据 | 非秘密偏好放在 UserDefaults；活跃度和时间线保存在 `~/Library/Application Support/PulseDock/`；不上传遥测 |
+| 诊断与截图 | 复制报告会排除秘密和未脱敏命令；提交 Issue 或分享截图前仍须自行检查主机、用户名、地址、余额、地点和内网信息 |
+
+完整安全边界见 [SECURITY.md](SECURITY.md)，外部数据源、刷新频率与降级策略见 [DATA_SOURCE_CATALOG.md](DATA_SOURCE_CATALOG.md)。
+
+## 运行要求
+
+- Apple Silicon Mac（arm64）；
+- macOS 26.0 或更高版本；
+- 如从源码构建：Xcode Command Line Tools；
+- 如需 Codex 额度：本机已安装并登录 Codex CLI；
+- 如需 SSH/GPU：目标主机已配置在 `~/.ssh/config` 中，且支持密钥非交互登录。
+
+Intel Mac 和旧版 macOS 当前未纳入构建与测试范围。
+
+## 从源码构建
 
 ```sh
 xcode-select --install
@@ -86,127 +115,46 @@ chmod +x scripts/test.sh scripts/build.sh
 open outputs/PulseDock.app
 ```
 
-构建脚本生成 `outputs/PulseDock.app` 和 `outputs/PulseDock-6.15.1.zip`，并执行签名、arm64 与解包验证。GitHub Release 发布还需要配置仅在 GitHub Actions 使用的更新私钥；完整发布仍未具备 Developer ID 签名和 Apple 公证。
+构建会生成 `outputs/PulseDock.app` 和与 [`VERSION`](VERSION) 一致的 ZIP，并执行签名、arm64 与解包验证。GitHub Release 的更新清单在 Actions 中签名并反验；完整的生产分发仍需要 Developer ID 签名和 Apple 公证。
 
-## 首次配置
+## 文档与维护
 
-### 浮窗和快捷键
+- [完整使用文档](outputs/PulseDock使用文档.md)
+- [更新日志](CHANGELOG.md)
+- [产品定位与对外表达](docs/PRODUCT_MESSAGING.md)
+- [社媒宣传文案包](docs/PROMOTION_COPY.md)
+- [安全与隐私](SECURITY.md)
+- [数据源目录](DATA_SOURCE_CATALOG.md)
+- [测试说明](TESTING.md) 与 [发布检查清单](RELEASE_CHECKLIST.md)
+- [文档维护规范](docs/DOCUMENTATION_POLICY.md)
+- [贡献指南](CONTRIBUTING.md)
 
-- `⌥ Space`：默认显示/隐藏；
-- `⌥ ⇧ Space`：默认展开/收起；
-- 可在“设置 → 快捷键”录制其他组合；
-- 冲突或注册失败时会保留上一组可用设置。
+## 测试与已知限制
 
-### Codex 额度
-
-PulseDock 通过本机 Codex `app-server` 的只读接口显示额度窗口和 Token 活动，不读取、导出或刷新 Codex 登录 Token，也不会消耗重置券。
-
-1. 按 [OpenAI 官方 Codex CLI 文档](https://learn.chatgpt.com/docs/codex/cli) 安装 Codex。
-2. 在终端运行 `codex`，按官方流程登录。
-3. 重新打开 PulseDock，或在 Codex 卡片点击刷新。
-
-### 天气与位置
-
-- 默认使用手动选择的固定地点，不根据公网 IP 或代理节点改变城市；
-- 只有主动开启“自动跟随当前位置”时才请求 Core Location 权限；
-- 定位失败时保留上次有效天气。
-
-### SSH/GPU 设备
-
-先在终端验证：
-
-```sh
-ssh <Host 别名>
-```
-
-然后在“设备”页添加同一个 `Host` 别名。PulseDock 使用 `BatchMode=yes`，不会在后台弹出远程密码框。请使用 ssh-agent，并按实际环境选择“仅局域网”、“需要 VPN”或“公网可达”。“脱敏启动命令”需要逐台手动开启。
-
-### Clash/Mihomo
-
-PulseDock 优先读取 Clash Verge/Mihomo 在本机已保存的兼容订阅元数据，不读取或显示订阅 URL。如需刷新 provider：
-
-1. 确认 External Controller 仅监听回环地址，或使用 Clash Verge 的本机 Unix Socket；
-2. 在 PulseDock 中点“自动发现”；
-3. 如有 Secret，先解锁凭据保险库，再填写并保存；
-4. 先验证 `/version`，再同步 provider。
-
-### API 额度与飞书
-
-- GLM、DeepSeek、飞书 Webhook 和 Mihomo Secret 都应在 PulseDock 设置页填写；
-- 解锁后，本次运行只主动访问一次统一 Keychain 保险库；
-- 输入过程只保留在内存，点“保存全部变更”时才写入 Keychain；
-- 配置导出、时间线和可复制诊断不包含秘密。
-
-## 数据和秘密保护
-
-### 本机保存位置
-
-- 非秘密偏好：UserDefaults；
-- 活跃度与时间线：`~/Library/Application Support/PulseDock/`；
-- API Key、Webhook、签名密钥和 Controller Secret：macOS Keychain 中的 `com.pulsedock.monitor` PulseDock 项。
-
-### 仓库安全规则
-
-- 不要把 `.env`、SSH 私钥、API Key、Webhook、Cookie、订阅 URL、未脱敏诊断或真实服务器截图加入 Git；
-- `.gitignore` 已排除常见秘密文件、本地构建目录和发布产物；
-- 提交或提 Issue 前，请检查截图中的 SSH 主机、用户名、地址、余额和内网信息；
-- 如果秘密曾进入 Git 历史，必须先立即撤销/轮换秘密，再清理历史。
-
-完整边界见 [SECURITY.md](SECURITY.md)。
-
-## 数据源
-
-- Codex 个人额度与 Token 活动：本机 Codex `app-server` 只读接口；
-- Codex 社区全局重置信号：Codex Runway 公共 JSON，非 OpenAI 官方承诺；
-- 天气、日出日落和月相：Open-Meteo；
-- 节假日：项目内根据国务院办公厅公开安排整理的年度数据；
-- Clash：本机兼容订阅元数据和可选的本机 Mihomo Controller；
-- SSH/GPU：系统 `ssh`、本机 SSH 配置与远端固定只读命令；
-- 环境音：已核验作品页与 CC0 许可的 Freesound 录音；
-- 工作音乐和广播目录：Radio Browser 公开目录。
-
-完整来源、刷新节奏、认证材料与降级策略见 [DATA_SOURCE_CATALOG.md](DATA_SOURCE_CATALOG.md)。
-
-## 测试
+运行离线回归：
 
 ```sh
 ./scripts/test.sh
 ```
 
-测试覆盖额度解析、网络范围、SSH/GPU 畸形输入、脱敏规则、统一凭据保险库、音频 URL 安全、中文输入和快捷键回归。真实 SSH 冒烟测试必须显式传入已授权别名：
+测试覆盖额度解析、网络范围、SSH/GPU 畸形输入、脱敏规则、统一凭据保险库、音频 URL 安全、中文输入、快捷键和文档一致性。真实 SSH 冒烟测试必须显式传入已授权别名：
 
 ```sh
 ./scripts/test-remote.sh <Host 别名>
 ```
 
-详细门禁见 [TESTING.md](TESTING.md) 和 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)。
+- 仅 Apple Silicon + macOS 26 被构建和测试；
+- 安装包尚未公证，首次打开需要用户明确确认；
+- 自动更新只有在签名清单、发布构建及跨版本升级验证全部通过时才会安装；任何验证失败都会拒绝更新；
+- Cursor 个人额度依赖本机非公开内部接口，上游字段变化时会明确降级；
+- Radio Browser 是第三方目录，不保证每个地区都能使用所有音源。
 
 ## 卸载
 
-1. 如需同时清除凭据，先在 PulseDock 中选择“清除统一凭据保险库”；
+1. 若同时清除凭据，先在 PulseDock 中选择“清除统一凭据保险库”；
 2. 完全退出 PulseDock；
 3. 删除 `PulseDock.app`；
-4. 如需删除本地历史，备份后再删除 `~/Library/Application Support/PulseDock/` 与 PulseDock 相关 UserDefaults。
-
-## 项目文档
-
-- [完整使用文档](outputs/PulseDock使用文档.md)
-- [更新日志](CHANGELOG.md)
-- [安全与隐私](SECURITY.md)
-- [数据源目录](DATA_SOURCE_CATALOG.md)
-- [环境音来源与许可](AMBIENT_SOUND_CATALOG.md)
-- [产品规范](PRODUCT_SPEC.md)
-- [架构说明](ARCHITECTURE.md)
-- [测试说明](TESTING.md)
-- [贡献指南](CONTRIBUTING.md)
-
-## 当前限制
-
-- 只构建和测试 Apple Silicon + macOS 26；
-- 安装包尚未公证，首次打开需要用户明确确认；
-- 自动更新只会在 GitHub Actions 的签名清单、私钥 Secret、发布构建与旧版到新版真实升级测试都完成后启用；若其中任一验证失败，应用会拒绝安装。
-- Cursor 个人额度依赖本机非公开内部接口，上游字段变化时会明确降级；
-- Radio Browser 是第三方目录，不保证所有音源在每个地区都可用。
+4. 如需删除本地历史，备份后删除 `~/Library/Application Support/PulseDock/` 与 PulseDock 相关 UserDefaults。
 
 ## 许可证
 

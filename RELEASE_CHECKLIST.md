@@ -59,7 +59,9 @@
 ## 文档与交付
 
 - [ ] 更新 `CHANGELOG.md`。
-- [ ] 更新 `README.md` 当前版本摘要。
+- [ ] 审阅 `README.md` / `README.en.md`：产品定位、安装、限制和隐私边界与当前公开版本一致；首页只链接 Latest Release，不手写版本或 ZIP 名。
+- [ ] 更新或移除带旧版本号的产品截图；所有公开截图已脱敏。
+- [ ] 运行 `./scripts/check_docs.sh`，并在 GitHub 上审阅 README 渲染与链接。
 - [ ] 更新 `outputs/PulseDock使用文档.md`。
 - [ ] 生成与当前版本号一致的 `outputs/PulseDock-<版本>测试报告.md`。
 - [ ] 生成与当前版本号一致的 `outputs/PulseDock-<版本>发布说明.md`，并写入最终 ZIP SHA-256。

@@ -4,6 +4,8 @@ set -euo pipefail
 PROJECT_DIR="${0:A:h:h}"
 cd "$PROJECT_DIR"
 
+./scripts/check_docs.sh
+
 SDK_PATH="/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
 SWIFTC="/Library/Developer/CommandLineTools/usr/bin/swiftc"
 MODULE_CACHE="$PROJECT_DIR/.build/test-module-cache"
