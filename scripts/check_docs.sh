@@ -22,10 +22,6 @@ if ! rg -q 'github/v/release/asfx0412/PulseDock' README.md README.en.md; then
   exit 1
 fi
 
-for document in docs/PRODUCT_MESSAGING.md docs/PROMOTION_COPY.md docs/DOCUMENTATION_POLICY.md; do
-  test -s "$document" || { echo "Missing documentation: $document" >&2; exit 1; }
-done
-
 if rg -n 'v6\.12\.3|6\.15\.1' README.md README.en.md; then
   echo "README contains a known stale release version" >&2
   exit 1

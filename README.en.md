@@ -115,39 +115,19 @@ chmod +x scripts/test.sh scripts/build.sh
 open outputs/PulseDock.app
 ```
 
-The build produces `outputs/PulseDock.app` and a ZIP matching [`VERSION`](VERSION), with signature, arm64, and extracted-archive validation. GitHub Release manifests are signed and reverse-verified in Actions; production distribution still needs Developer ID signing and Apple notarization.
+The build produces a local `PulseDock.app` and ZIP. Read the contribution guide before working on the project.
 
-## Documentation and maintenance
+## Further information
 
 - [Chinese user guide](outputs/PulseDock使用文档.md)
 - [Changelog](CHANGELOG.md)
-- [Product positioning and messaging](docs/PRODUCT_MESSAGING.md)
-- [Ready-to-use promotion copy](docs/PROMOTION_COPY.md)
 - [Security and privacy](SECURITY.md)
-- [Data source catalog](DATA_SOURCE_CATALOG.md)
-- [Testing](TESTING.md) and [release checklist](RELEASE_CHECKLIST.md)
-- [Documentation maintenance policy](docs/DOCUMENTATION_POLICY.md)
 - [Contributing](CONTRIBUTING.md)
 
-## Test and current limitations
-
-Run the offline regression suite:
-
-```sh
-./scripts/test.sh
-```
-
-It covers quota parsing, network scope, malformed SSH/GPU input, sanitization, the credential vault, audio-URL safety, Chinese input, shortcuts, and documentation consistency. A live SSH smoke test needs an explicitly authorized alias:
-
-```sh
-./scripts/test-remote.sh <host-alias>
-```
+## Compatibility and installation notes
 
 - Only Apple Silicon + macOS 26 are built and tested.
 - The package is not notarized, so first launch requires explicit user confirmation.
-- Automatic updates install only after the signed manifest, release build, and cross-version upgrade checks all pass; any failed verification rejects the update.
-- Cursor personal usage relies on a local, non-public internal interface and degrades explicitly when upstream fields change.
-- Radio Browser is a third-party directory and cannot guarantee every stream in every region.
 
 ## Uninstall
 

@@ -115,39 +115,19 @@ chmod +x scripts/test.sh scripts/build.sh
 open outputs/PulseDock.app
 ```
 
-构建会生成 `outputs/PulseDock.app` 和与 [`VERSION`](VERSION) 一致的 ZIP，并执行签名、arm64 与解包验证。GitHub Release 的更新清单在 Actions 中签名并反验；完整的生产分发仍需要 Developer ID 签名和 Apple 公证。
+构建会生成本地 `PulseDock.app` 和 ZIP。参与开发前请先阅读贡献指南。
 
-## 文档与维护
+## 相关信息
 
 - [完整使用文档](outputs/PulseDock使用文档.md)
 - [更新日志](CHANGELOG.md)
-- [产品定位与对外表达](docs/PRODUCT_MESSAGING.md)
-- [社媒宣传文案包](docs/PROMOTION_COPY.md)
 - [安全与隐私](SECURITY.md)
-- [数据源目录](DATA_SOURCE_CATALOG.md)
-- [测试说明](TESTING.md) 与 [发布检查清单](RELEASE_CHECKLIST.md)
-- [文档维护规范](docs/DOCUMENTATION_POLICY.md)
 - [贡献指南](CONTRIBUTING.md)
 
-## 测试与已知限制
-
-运行离线回归：
-
-```sh
-./scripts/test.sh
-```
-
-测试覆盖额度解析、网络范围、SSH/GPU 畸形输入、脱敏规则、统一凭据保险库、音频 URL 安全、中文输入、快捷键和文档一致性。真实 SSH 冒烟测试必须显式传入已授权别名：
-
-```sh
-./scripts/test-remote.sh <Host 别名>
-```
+## 兼容性与安装提示
 
 - 仅 Apple Silicon + macOS 26 被构建和测试；
 - 安装包尚未公证，首次打开需要用户明确确认；
-- 自动更新只有在签名清单、发布构建及跨版本升级验证全部通过时才会安装；任何验证失败都会拒绝更新；
-- Cursor 个人额度依赖本机非公开内部接口，上游字段变化时会明确降级；
-- Radio Browser 是第三方目录，不保证每个地区都能使用所有音源。
 
 ## 卸载
 
