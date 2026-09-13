@@ -69,6 +69,48 @@ enum SecretStore {
         }
     }
 
+    /// Reads a v2 vault after an explicit user-initiated system authentication.
+    /// Touch ID is requested first; password is used only when biometric
+    /// authentication is unavailable, not enrolled, or locked out.
+    static func readSystemAuthenticated(_ account: String) async -> ReadResult {
+        let context = LAContext()
+        do {
+            try await authenticate(context: context, policy: .deviceOwnerAuthenticationWithBiometrics)
+        } catch {
+            guard shouldFallbackToPassword(error) else { return .interactionRequired }
+            do { try await authenticate(context: context, policy: .deviceOwnerAuthentication) }
+            catch { return .interactionRequired }
+        }
+        var query = baseQuery(account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        query[kSecUseAuthenticationContext as String] = context
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        switch status {
+        case errSecSuccess:
+            guard let data = result as? Data, let value = String(data: data, encoding: .utf8) else { return .failed(errSecDecode) }
+            return .value(value)
+        case errSecItemNotFound: return .missing
+        case errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled: return .interactionRequired
+        default: return .failed(status)
+        }
+    }
+
+    private static func authenticate(context: LAContext, policy: LAPolicy) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            context.evaluatePolicy(policy, localizedReason: "解锁 PulseDock 凭据保险库") { success, error in
+                if success { continuation.resume() }
+                else { continuation.resume(throwing: error ?? LAError(.authenticationFailed)) }
+            }
+        }
+    }
+
+    private static func shouldFallbackToPassword(_ error: Error) -> Bool {
+        let code = (error as? LAError)?.code
+        return code == .biometryNotAvailable || code == .biometryNotEnrolled || code == .biometryLockout
+    }
+
     @discardableResult
     static func write(_ value: String, account: String) -> WriteResult {
         guard !value.isEmpty else { return remove(account) }
@@ -117,6 +159,22 @@ enum SecretStore {
         case errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled: return .interactionRequired
         default: return .failed(updateStatus)
         }
+    }
+
+    /// Writes the v2 item after the caller has already completed the explicit
+    /// Touch ID gate in `readSystemAuthenticated`.
+    ///
+    /// `SecAccessControl(.userPresence)` creates a Data Protection Keychain
+    /// item on macOS. That requires an application-identifier/keychain-access-
+    /// group entitlement issued by an Apple signing team. PulseDock's local
+    /// ad-hoc builds intentionally have no team entitlement, and Security
+    /// rejects that add with errSecMissingEntitlement (-34018). Keep the
+    /// biometric gate in `LAContext`, then store the v2 payload in the normal
+    /// local Login Keychain. All PulseDock access paths require that gate and
+    /// background paths remain non-interactive, so this avoids a password sheet
+    /// without silently reading a secret in a background refresh.
+    static func writeSystemAuthenticated(_ value: String, account: String) -> WriteResult {
+        write(value, account: account)
     }
 
     @discardableResult

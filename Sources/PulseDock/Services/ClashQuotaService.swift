@@ -2,7 +2,6 @@ import Foundation
 import Darwin
 
 actor ClashQuotaService {
-    private var cachedCandidateURLs: [URL]?
     nonisolated static var profilesURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles.yaml")
@@ -13,10 +12,9 @@ actor ClashQuotaService {
     }
 
     func discover(customURL: URL? = nil) async -> [ClashQuotaSnapshot] {
-        if cachedCandidateURLs == nil {
-            cachedCandidateURLs = await Task.detached(priority: .utility) { Self.candidateURLs() }.value
-        }
-        var urls = cachedCandidateURLs ?? [Self.profilesURL]
+        // Re-discover on every read. Clash clients commonly atomically replace
+        // profiles.yaml or create a new profile directory after they start.
+        var urls = await Task.detached(priority: .utility) { Self.candidateURLs() }.value
         if let customURL { urls.insert(customURL, at: 0) }
         return await Task.detached(priority: .utility) {
             var snapshots: [ClashQuotaSnapshot] = []
@@ -28,6 +26,14 @@ actor ClashQuotaService {
             }
             return snapshots.sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
         }.value
+    }
+
+    func watchedDirectories(customURL: URL? = nil) async -> [URL] {
+        var urls = await Task.detached(priority: .utility) { Self.candidateURLs() }.value
+        if let customURL { urls.insert(customURL, at: 0) }
+        let directories = urls.map { $0.deletingLastPathComponent().standardizedFileURL }
+        var seen = Set<String>()
+        return directories.filter { seen.insert($0.path).inserted }
     }
 
     nonisolated static func parse(url: URL) -> ClashQuotaSnapshot {
@@ -144,38 +150,60 @@ actor ClashQuotaService {
 }
 
 final class ClashProfilesWatcher: @unchecked Sendable {
-    private let url: URL
     private let queue = DispatchQueue(label: "com.pulsedock.clash-watcher", qos: .utility)
-    private var source: DispatchSourceFileSystemObject?
-    private var descriptor: Int32 = -1
+    private var sources: [String: DispatchSourceFileSystemObject] = [:]
+    private var directories: [URL] = []
+    private var pendingChange: DispatchWorkItem?
     var onChange: (@Sendable () -> Void)?
 
-    init(url: URL = ClashQuotaService.profilesURL) { self.url = url }
+    func configure(directories: [URL]) {
+        let normalized = directories.map(\.standardizedFileURL)
+        queue.async { [weak self] in
+            guard let self else { return }
+            let next = normalized.filter { FileManager.default.fileExists(atPath: $0.path) }
+            guard next.map(\.path).sorted() != self.directories.map(\.path).sorted() else { return }
+            self.cancelSources()
+            self.directories = next
+            for directory in next { self.install(directory: directory) }
+        }
+    }
 
     func start() {
-        stop()
-        descriptor = open(url.path, O_EVTONLY)
-        guard descriptor >= 0 else { return }
-        let openedDescriptor = descriptor
-        let next = DispatchSource.makeFileSystemObjectSource(fileDescriptor: openedDescriptor, eventMask: [.write, .rename, .delete], queue: queue)
-        next.setEventHandler { [weak self] in
-            guard let self else { return }
-            self.onChange?()
-            if !next.data.intersection([.rename, .delete]).isEmpty {
-                self.stop()
-                self.queue.asyncAfter(deadline: .now() + 1) { self.start() }
-            }
-        }
-        next.setCancelHandler { [weak self] in
-            close(openedDescriptor)
-            if self?.descriptor == openedDescriptor { self?.descriptor = -1 }
-        }
-        source = next
-        next.resume()
+        configure(directories: directories)
     }
 
     func stop() {
-        source?.cancel()
-        source = nil
+        queue.async { [weak self] in
+            self?.pendingChange?.cancel()
+            self?.pendingChange = nil
+            self?.cancelSources()
+            self?.directories = []
+        }
+    }
+
+    private func install(directory: URL) {
+        let descriptor = open(directory.path, O_EVTONLY)
+        guard descriptor >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor, eventMask: [.write, .rename, .delete, .attrib, .extend], queue: queue
+        )
+        source.setEventHandler { [weak self] in self?.scheduleChange() }
+        source.setCancelHandler { close(descriptor) }
+        sources[directory.path] = source
+        source.resume()
+    }
+
+    private func scheduleChange() {
+        pendingChange?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.onChange?() }
+        pendingChange = work
+        // A subscription refresh often writes a temp file then renames it.
+        // One directory event after the short quiet period is enough to rescan.
+        queue.asyncAfter(deadline: .now() + .milliseconds(650), execute: work)
+    }
+
+    private func cancelSources() {
+        sources.values.forEach { $0.cancel() }
+        sources.removeAll()
     }
 }

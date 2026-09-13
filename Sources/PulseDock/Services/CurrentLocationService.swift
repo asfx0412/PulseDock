@@ -5,6 +5,7 @@ enum CurrentLocationError: LocalizedError {
     case servicesDisabled
     case authorizationDenied
     case authorizationRestricted
+    case authorizationRequired
     case temporarilyUnavailable
     case inadequateAccuracy
     case timedOut
@@ -23,6 +24,8 @@ enum CurrentLocationError: LocalizedError {
             "定位权限未授予；可在系统设置中允许 PulseDock 使用位置"
         case .authorizationRestricted:
             "系统限制了定位服务"
+        case .authorizationRequired:
+            "需要允许 PulseDock 使用位置"
         case .temporarilyUnavailable:
             "暂时无法确定当前位置"
         case .inadequateAccuracy:
@@ -45,6 +48,7 @@ enum CurrentLocationError: LocalizedError {
         case .servicesDisabled: WeatherLocationDiagnosticKind.servicesDisabled.label
         case .authorizationDenied: WeatherLocationDiagnosticKind.authorizationDenied.label
         case .authorizationRestricted: WeatherLocationDiagnosticKind.authorizationRestricted.label
+        case .authorizationRequired: "需要用户授权定位"
         case .temporarilyUnavailable: WeatherLocationDiagnosticKind.locationUnknown.label
         case .inadequateAccuracy: WeatherLocationDiagnosticKind.inadequateAccuracy.label
         case .timedOut: WeatherLocationDiagnosticKind.timedOut.label
@@ -58,7 +62,7 @@ enum CurrentLocationError: LocalizedError {
         switch self {
         case .temporarilyUnavailable, .inadequateAccuracy, .timedOut, .reverseGeocodeFailed, .unexpected:
             true
-        case .servicesDisabled, .authorizationDenied, .authorizationRestricted, .cancelled:
+        case .servicesDisabled, .authorizationDenied, .authorizationRestricted, .authorizationRequired, .cancelled:
             false
         }
     }
@@ -68,6 +72,7 @@ enum CurrentLocationError: LocalizedError {
         case .servicesDisabled: .servicesDisabled
         case .authorizationDenied: .authorizationDenied
         case .authorizationRestricted: .authorizationRestricted
+        case .authorizationRequired: .authorizationDenied
         case .temporarilyUnavailable: .locationUnknown
         case .inadequateAccuracy: .inadequateAccuracy
         case .timedOut: .timedOut
@@ -100,7 +105,7 @@ final class CurrentLocationService: NSObject {
         manager.desiredAccuracy = kCLLocationAccuracyKilometer
     }
 
-    func requestCurrentCity(completion: @escaping (Result<WeatherLocationCandidate, CurrentLocationError>) -> Void) {
+    func requestCurrentCity(allowAuthorizationPrompt: Bool = true, completion: @escaping (Result<WeatherLocationCandidate, CurrentLocationError>) -> Void) {
         guard activeRequestID == nil else {
             completion(.failure(.unexpected("a location request is already active")))
             return
@@ -129,7 +134,7 @@ final class CurrentLocationService: NSObject {
             }
             self.finish(requestID, .failure(error))
         }
-        startLocationIfAuthorized(requestID)
+        startLocationIfAuthorized(requestID, allowAuthorizationPrompt: allowAuthorizationPrompt)
     }
 
     func cancelCurrentRequest() {
@@ -137,7 +142,7 @@ final class CurrentLocationService: NSObject {
         finish(requestID, .failure(.cancelled))
     }
 
-    private func startLocationIfAuthorized(_ requestID: UUID) {
+    private func startLocationIfAuthorized(_ requestID: UUID, allowAuthorizationPrompt: Bool = false) {
         guard activeRequestID == requestID else { return }
         guard CLLocationManager.locationServicesEnabled() else {
             finish(requestID, .failure(.servicesDisabled))
@@ -145,7 +150,8 @@ final class CurrentLocationService: NSObject {
         }
         switch manager.authorizationStatus {
         case .notDetermined:
-            manager.requestWhenInUseAuthorization()
+            if allowAuthorizationPrompt { manager.requestWhenInUseAuthorization() }
+            else { finish(requestID, .failure(.authorizationRequired)) }
         case .authorizedAlways, .authorizedWhenInUse:
             manager.startUpdatingLocation()
         case .denied:
@@ -239,7 +245,9 @@ final class CurrentLocationService: NSObject {
 extension CurrentLocationService: @preconcurrency CLLocationManagerDelegate {
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         guard let requestID = activeRequestID else { return }
-        startLocationIfAuthorized(requestID)
+        // This callback follows an explicit authorization request.  If the
+        // user allowed it, continue the already bounded location session.
+        startLocationIfAuthorized(requestID, allowAuthorizationPrompt: false)
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {

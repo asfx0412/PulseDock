@@ -22,6 +22,12 @@ struct ClashSyncResult: Sendable {
     var checkedAt: Date
 }
 
+struct ClashControllerUsageRead: Sendable {
+    var snapshots: [ClashQuotaSnapshot]
+    var reachable: Bool
+    var evidence: String
+}
+
 actor ClashControllerService {
     private let vergeSocketAddress = "unix:///tmp/verge/verge-mihomo.sock"
 
@@ -52,13 +58,22 @@ actor ClashControllerService {
     }
 
     func providerUsage(baseURL: String, secret: String) async -> [ClashQuotaSnapshot] {
-        guard validAddress(baseURL) else { return [] }
+        await observeProviderUsage(baseURL: baseURL, secret: secret).snapshots
+    }
+
+    /// One read-only GET used by background observation. It intentionally does
+    /// not call inspect() because that would add a /version request to every
+    /// cadence; the provider response itself is enough to report reachability.
+    func observeProviderUsage(baseURL: String, secret: String) async -> ClashControllerUsageRead {
+        guard validAddress(baseURL) else { return ClashControllerUsageRead(snapshots: [], reachable: false, evidence: "控制器地址无效；只允许本机回环地址或 Clash Verge 本机套接字") }
         do {
             let response = try await request(baseURL: baseURL, endpoint: "providers/proxies", secret: secret)
-            guard response.status == 200,
-                  let root = try JSONSerialization.jsonObject(with: response.data) as? [String: Any],
-                  let providers = root["providers"] as? [String: Any] else { return [] }
-            return providers.compactMap { name, raw in
+            guard response.status == 200 else { return ClashControllerUsageRead(snapshots: [], reachable: false, evidence: httpEvidence(response.status)) }
+            guard let root = try JSONSerialization.jsonObject(with: response.data) as? [String: Any],
+                  let providers = root["providers"] as? [String: Any] else {
+                return ClashControllerUsageRead(snapshots: [], reachable: true, evidence: "控制器已响应，但代理提供者数据格式无法识别")
+            }
+            let snapshots: [ClashQuotaSnapshot] = providers.compactMap { name, raw in
                 guard let provider = raw as? [String: Any],
                       let info = (provider["subscriptionInfo"] ?? provider["subscription-info"]) as? [String: Any],
                       let total = uint(info, "Total", "total"), total > 0 else { return nil }
@@ -79,7 +94,9 @@ actor ClashControllerService {
                     message: "数据来自运行中的 Mihomo 代理提供者"
                 )
             }
-        } catch { return [] }
+            let evidence = snapshots.isEmpty ? "控制器可用，但当前没有带订阅用量的代理提供者" : "已从本机控制器读取 \(snapshots.count) 个代理提供者"
+            return ClashControllerUsageRead(snapshots: snapshots, reachable: true, evidence: evidence)
+        } catch { return ClashControllerUsageRead(snapshots: [], reachable: false, evidence: connectionEvidence(error)) }
     }
     func inspect(baseURL: String, secret: String) async -> ClashControllerInspection {
         guard validAddress(baseURL) else {

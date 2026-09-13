@@ -4,6 +4,29 @@ set -euo pipefail
 PROJECT_DIR="${0:A:h:h}"
 cd "$PROJECT_DIR"
 
+# Keep tests runnable on a clean macOS machine where Homebrew ripgrep is not
+# installed. The gate below only needs -q, -n and -o with ERE patterns.
+if ! command -v rg >/dev/null 2>&1; then
+  rg() {
+    local -a flags files
+    local recursive=0
+    while (( $# > 0 )); do
+      case "$1" in
+        -q|-n|-o) flags+=("$1"); shift ;;
+        *) break ;;
+      esac
+    done
+    local pattern="$1"; shift
+    files=("$@")
+    (( ${#files[@]} > 0 )) && recursive=1
+    if (( recursive )); then
+      command grep -R -E "${flags[@]}" -- "$pattern" "${files[@]}"
+    else
+      command grep -E "${flags[@]}" -- "$pattern"
+    fi
+  }
+fi
+
 ./scripts/check_docs.sh
 
 SDK_PATH="/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
@@ -59,6 +82,16 @@ compile_and_run quota_media \
   Sources/PulseDock/Services/CodexQuotaService.swift \
   Sources/PulseDock/Services/InternetRadioDirectoryService.swift
 
+compile_and_run community_reset_616 \
+  work/Version616CommunityResetSelfTest.swift \
+  Sources/PulseDock/Services/CodexCommunityResetService.swift \
+  Sources/PulseDock/Services/CommunityResetAlertLedger.swift
+
+if ! rg -q 'private var inFlight' Sources/PulseDock/Services/CodexCommunityResetService.swift || ! rg -q 'maximumResponseBytes' Sources/PulseDock/Services/CodexCommunityResetService.swift; then
+  echo "Community reset reader must retain single-flight and bounded-response protections" >&2
+  exit 1
+fi
+
 compile_and_run audio_policy \
   work/Version65AudioPolicySelfTest.swift \
   Sources/PulseDock/Models/MediaModels.swift \
@@ -79,6 +112,11 @@ compile_and_run remote \
   Sources/PulseDock/Models/RemoteModels.swift \
   Sources/PulseDock/Services/SSHMonitorService.swift \
   Sources/PulseDock/Services/RemoteNetworkScopeService.swift
+
+compile_and_run remote_scheduler \
+  work/RemoteProbeSchedulerSelfTest.swift \
+  Sources/PulseDock/Models/RemoteModels.swift \
+  Sources/PulseDock/Services/RemoteProbeScheduler.swift
 
 compile_and_run ledger \
   work/Version6SelfTest.swift \
@@ -137,6 +175,20 @@ compile_and_run clash_controller \
   work/ClashControllerSelfTest.swift \
   Sources/PulseDock/Models/ProductivityModels.swift \
   Sources/PulseDock/Services/ClashControllerService.swift
+
+# Provider PUT is permitted only through the explicit user action or the
+# separate, user-enabled automatic subscription-update policy. Watchers and
+# ordinary quota rereads must remain read-only.
+CLASH_READ_ONLY_SOURCE="$(sed -n '/func refreshClashQuota()/,/func synchronizeClashAndRefresh()/p; /private func handleClashMetadataChange()/,/private func applySelectedClash()/p' Sources/PulseDock/App/MonitorStore.swift)"
+if rg -q 'clashControllerService\.synchronize' <<<"$CLASH_READ_ONLY_SOURCE"; then
+  echo "Clash watcher or ordinary reread must not request provider synchronization" >&2
+  exit 1
+fi
+CLASH_SYNC_SOURCE="$(sed -n '/func synchronizeClashAndRefresh()/,/func autoDiscoverClashController()/p' Sources/PulseDock/App/MonitorStore.swift)"
+if ! grep -q 'clashControllerService\.synchronize' <<<"$CLASH_SYNC_SOURCE" || ! grep -q 'clashAutomaticProviderSyncEnabled' <<<"$CLASH_SYNC_SOURCE"; then
+  echo "Clash synchronization policy must contain the controller PUT and explicit automatic opt-in gate" >&2
+  exit 1
+fi
 
 compile_and_run keychain_policy \
   work/Version631KeychainSelfTest.swift \

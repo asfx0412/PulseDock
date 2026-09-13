@@ -4,6 +4,9 @@
 
 - [ ] 根目录 `VERSION` 与 `Resources/Info.plist` 一致。
 - [ ] 本次只构建、测试和发布 macOS。
+- [ ] 本地发布前在仓库根目录执行 `scripts/prepare_local_release.sh <版本>`；仅在真机验收通过后执行显式 `--publish`。详见 `docs/LOCAL_RELEASE_PUBLISH.md`。
+- [ ] `gh auth status -h github.com` 指向正确发布账号，远端是 `asfx0412/PulseDock`，GitHub Actions Secret `PULSEDOCK_UPDATE_PRIVATE_KEY_BASE64` 已配置；私钥不在本机仓库或 App 内。
+- [ ] `git status --short` 中没有脚本会拒绝的已暂存项、普通未跟踪项、删除项或验收后变动；不得将无关历史 outputs 删除或秘密文件纳入发布。
 
 ## 代码与数据
 

@@ -4,6 +4,30 @@ set -euo pipefail
 PROJECT_DIR="${0:A:h:h}"
 cd "$PROJECT_DIR"
 
+# The release gate must work on a stock macOS Command Line Tools install.
+# Prefer ripgrep when available, but retain the small subset of its interface
+# used by our shell checks when a developer has not installed it yet.
+if ! command -v rg >/dev/null 2>&1; then
+  rg() {
+    local -a flags files
+    local recursive=0
+    while (( $# > 0 )); do
+      case "$1" in
+        -q|-n|-o) flags+=("$1"); shift ;;
+        *) break ;;
+      esac
+    done
+    local pattern="$1"; shift
+    files=("$@")
+    (( ${#files[@]} > 0 )) && recursive=1
+    if (( recursive )); then
+      command grep -R -E "${flags[@]}" -- "$pattern" "${files[@]}"
+    else
+      command grep -E "${flags[@]}" -- "$pattern"
+    fi
+  }
+fi
+
 readmes=(README.md README.en.md)
 for readme in "${readmes[@]}"; do
   test -s "$readme"

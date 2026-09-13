@@ -1,5 +1,6 @@
 import AppKit
 import CoreLocation
+import CryptoKit
 import Foundation
 import Network
 import SwiftUI
@@ -51,7 +52,10 @@ final class MonitorStore: ObservableObject {
         didSet {
             UserDefaults.standard.set(weatherLocationMode.rawValue, forKey: PreferenceKey.weatherLocationMode)
             if weatherLocationMode == .automatic {
-                requestAutomaticWeatherLocation(force: true)
+                // Switching modes is an explicit user choice.  Only this path
+                // (and the visible “立即检查” button) may ask macOS for a
+                // previously undecided location authorization.
+                requestAutomaticWeatherLocation(force: true, allowAuthorizationPrompt: true)
             } else {
                 cancelAutomaticWeatherLocationRetry(resetFailureCount: true)
                 if weatherLocationInProgress { cancelCurrentWeatherLocation() }
@@ -65,6 +69,21 @@ final class MonitorStore: ObservableObject {
     @Published private(set) var isRefreshingCommunityReset = false
     @Published private(set) var isRefreshingIP = false
 
+    // Community reset alerts are intentionally separate from the general
+    // infrastructure-alert switch. The source is third-party and users must
+    // opt in before it can generate a “use remaining quota” notification.
+    @Published var communityResetAlertsEnabled: Bool { didSet { UserDefaults.standard.set(communityResetAlertsEnabled, forKey: PreferenceKey.communityResetAlertsEnabled) } }
+    @Published var communityResetLocalNotificationsEnabled: Bool { didSet { UserDefaults.standard.set(communityResetLocalNotificationsEnabled, forKey: PreferenceKey.communityResetLocalNotificationsEnabled) } }
+    @Published var communityResetFeishuNotificationsEnabled: Bool { didSet { UserDefaults.standard.set(communityResetFeishuNotificationsEnabled, forKey: PreferenceKey.communityResetFeishuNotificationsEnabled) } }
+    @Published var communityResetMinimumConfidencePercent: Int { didSet { UserDefaults.standard.set(communityResetMinimumConfidencePercent, forKey: PreferenceKey.communityResetMinimumConfidencePercent) } }
+    @Published var communityResetFutureWindowHours: Int { didSet { UserDefaults.standard.set(communityResetFutureWindowHours, forKey: PreferenceKey.communityResetFutureWindowHours) } }
+    @Published var communityResetFirstAlertEnabled: Bool { didSet { UserDefaults.standard.set(communityResetFirstAlertEnabled, forKey: PreferenceKey.communityResetFirstAlertEnabled) } }
+    @Published var communityReset60MinuteAlertEnabled: Bool { didSet { UserDefaults.standard.set(communityReset60MinuteAlertEnabled, forKey: PreferenceKey.communityReset60MinuteAlertEnabled) } }
+    @Published var communityReset30MinuteAlertEnabled: Bool { didSet { UserDefaults.standard.set(communityReset30MinuteAlertEnabled, forKey: PreferenceKey.communityReset30MinuteAlertEnabled) } }
+    @Published var communityResetCompletionAlertEnabled: Bool { didSet { UserDefaults.standard.set(communityResetCompletionAlertEnabled, forKey: PreferenceKey.communityResetCompletionAlertEnabled) } }
+    @Published private(set) var communityResetFirstSeenAt: Date?
+    @Published private(set) var communityResetLastDeliveryStatus = "尚未派发"
+
     @Published var diagnosticReport = NetworkDiagnosticReport.idle
     @Published var clashQuota = ClashQuotaSnapshot.locked
     @Published var clashSubscriptions: [ClashQuotaSnapshot] = []
@@ -72,6 +91,12 @@ final class MonitorStore: ObservableObject {
     @Published var clashControllerEnabled: Bool { didSet { UserDefaults.standard.set(clashControllerEnabled, forKey: PreferenceKey.clashControllerEnabled) } }
     @Published var clashControllerURL: String { didSet { UserDefaults.standard.set(clashControllerURL, forKey: PreferenceKey.clashControllerURL) } }
     @Published var clashControllerSecret: String
+    /// Explicit opt-in: when enabled, PulseDock asks the already configured
+    /// local Mihomo controller to update providers on this cadence. This is
+    /// intentionally different from merely reading the local quota metadata.
+    @Published var clashAutomaticProviderSyncEnabled: Bool { didSet { UserDefaults.standard.set(clashAutomaticProviderSyncEnabled, forKey: PreferenceKey.clashAutomaticProviderSyncEnabled) } }
+    @Published var clashAutomaticProviderSyncIntervalMinutes: Int { didSet { UserDefaults.standard.set(clashAutomaticProviderSyncIntervalMinutes, forKey: PreferenceKey.clashAutomaticProviderSyncIntervalMinutes) } }
+    @Published private(set) var clashAutomaticProviderSyncStatus = "未启用自动更新订阅"
     @Published var clashSyncEvidence = "仅重读本地订阅元数据"
     @Published var isCheckingClashController = false
     @Published var clashCredentialStatus = "凭据保险库尚未解锁"
@@ -83,8 +108,15 @@ final class MonitorStore: ObservableObject {
     @Published private(set) var isRefreshingRemoteDevices = false
     @Published private(set) var refreshingRemoteDeviceIDs: Set<UUID> = []
     @Published private(set) var remoteActionFeedback: [UUID: String] = [:]
+    @Published var remoteSearchQuery = ""
+    @Published var remoteHealthFilter = "all"
+    @Published var remoteScopeFilter = "all"
 
     @Published var feishuAlertsEnabled: Bool { didSet { UserDefaults.standard.set(feishuAlertsEnabled, forKey: PreferenceKey.feishuAlertsEnabled) } }
+    // Secrets deliberately have no didSet persistence or side effects: a
+    // SecureField mutates them for every keystroke. The settings view calls
+    // `noteFeishuCredentialsEdited()` instead, which only invalidates an
+    // earlier verification marker and never writes the secret itself.
     @Published var feishuWebhook: String
     @Published var feishuSigningSecret: String
     @Published var alertCooldownMinutes: Int { didSet { UserDefaults.standard.set(alertCooldownMinutes, forKey: PreferenceKey.alertCooldownMinutes) } }
@@ -99,7 +131,9 @@ final class MonitorStore: ObservableObject {
     @Published var newAPIConnectorKey = ""
     @Published private(set) var isRefreshingAPIConnectors = false
     @Published private(set) var credentialVaultUnlocked = false
+    @Published private(set) var isUnlockingCredentialVault = false
     @Published private(set) var credentialVaultStatus = "已锁定；本次运行尚未读取任何凭据"
+    @Published var useSystemVaultAuthentication: Bool { didSet { UserDefaults.standard.set(useSystemVaultAuthentication, forKey: PreferenceKey.systemVaultAuthentication) } }
     @Published var pomodoroPhase: PomodoroPhase = .idle
     @Published var pomodoroSecondsRemaining = 25 * 60
     @Published var focusMinutes: Int { didSet { persistProductivitySettings(); resetPomodoroIfIdle() } }
@@ -134,6 +168,7 @@ final class MonitorStore: ObservableObject {
     private let probe = NetworkProbe()
     private let quotaService = CodexQuotaService()
     private let communityResetService = CodexCommunityResetService()
+    private let communityResetAlertLedger = CommunityResetAlertLedger()
     private let weatherService = WeatherService()
     private let currentLocationService = CurrentLocationService()
     private let clashService = ClashQuotaService()
@@ -144,6 +179,7 @@ final class MonitorStore: ObservableObject {
     private let sshMonitorService = SSHMonitorService()
     private let remoteNetworkScopeService = RemoteNetworkScopeService()
     private let feishuAlertService = FeishuAlertService()
+    private var verifiedFeishuCredentialFingerprint: String?
     private let apiConnectorService = APIConnectorService()
     let ambientSound = AmbientSoundService()
     private var apiConnectorKeyCache: [UUID: String] = [:]
@@ -182,6 +218,7 @@ final class MonitorStore: ObservableObject {
     private var lastRemoteProbeAt: [UUID: Date] = [:]
     private var remoteObservationUntil: [UUID: Date] = [:]
     private var remoteFailureStreak: [UUID: Int] = [:]
+    private var remoteManualRequested: Set<UUID> = []
     private var remoteNetworkGraceUntil: Date?
     private var weatherSelectionGeneration = 0
     private var weatherRefreshGeneration = 0
@@ -189,6 +226,7 @@ final class MonitorStore: ObservableObject {
     private var automaticWeatherLocationFailureCount = 0
     private var panelShownObserver: NSObjectProtocol?
     private var citySearchGeneration = 0
+    private var communityResetFailureCount = 0
 
     private enum PreferenceKey {
         static let focusMinutes = "PulseDock.focusMinutes"
@@ -221,9 +259,23 @@ final class MonitorStore: ObservableObject {
         static let clashControllerEnabled = "PulseDock.clashControllerEnabled"
         static let clashControllerURL = "PulseDock.clashControllerURL"
         static let remoteDevices = "PulseDock.remoteDevices"
+        static let clashAutomaticProviderSyncEnabled = "PulseDock.clashAutomaticProviderSyncEnabled"
+        static let clashAutomaticProviderSyncIntervalMinutes = "PulseDock.clashAutomaticProviderSyncIntervalMinutes"
+        static let lastClashAutomaticProviderSyncAt = "PulseDock.lastClashAutomaticProviderSyncAt"
         static let feishuAlertsEnabled = "PulseDock.feishuAlertsEnabled"
+        static let verifiedFeishuCredentialFingerprint = "PulseDock.verifiedFeishuCredentialFingerprint"
         static let alertCooldownMinutes = "PulseDock.alertCooldownMinutes"
+        static let communityResetAlertsEnabled = "PulseDock.communityResetAlertsEnabled"
+        static let communityResetLocalNotificationsEnabled = "PulseDock.communityResetLocalNotificationsEnabled"
+        static let communityResetFeishuNotificationsEnabled = "PulseDock.communityResetFeishuNotificationsEnabled"
+        static let communityResetMinimumConfidencePercent = "PulseDock.communityResetMinimumConfidencePercent"
+        static let communityResetFutureWindowHours = "PulseDock.communityResetFutureWindowHours"
+        static let communityResetFirstAlertEnabled = "PulseDock.communityResetFirstAlertEnabled"
+        static let communityReset60MinuteAlertEnabled = "PulseDock.communityReset60MinuteAlertEnabled"
+        static let communityReset30MinuteAlertEnabled = "PulseDock.communityReset30MinuteAlertEnabled"
+        static let communityResetCompletionAlertEnabled = "PulseDock.communityResetCompletionAlertEnabled"
         static let apiConnectors = "PulseDock.apiConnectors"
+        static let systemVaultAuthentication = "PulseDock.systemVaultAuthentication"
     }
 
     init() {
@@ -252,6 +304,8 @@ final class MonitorStore: ObservableObject {
         selectedClashIdentifier = defaults.string(forKey: PreferenceKey.selectedClash) ?? ""
         clashControllerEnabled = defaults.bool(forKey: PreferenceKey.clashControllerEnabled)
         clashControllerURL = defaults.string(forKey: PreferenceKey.clashControllerURL) ?? "127.0.0.1:9090"
+        clashAutomaticProviderSyncEnabled = defaults.bool(forKey: PreferenceKey.clashAutomaticProviderSyncEnabled)
+        clashAutomaticProviderSyncIntervalMinutes = min(240, max(15, defaults.object(forKey: PreferenceKey.clashAutomaticProviderSyncIntervalMinutes) as? Int ?? 30))
         // Never read Keychain during launch: a locked login keychain can queue
         // several system prompts after the UI is already visible.
         clashControllerSecret = ""
@@ -259,8 +313,21 @@ final class MonitorStore: ObservableObject {
         feishuAlertsEnabled = defaults.bool(forKey: PreferenceKey.feishuAlertsEnabled)
         feishuWebhook = ""
         feishuSigningSecret = ""
+        verifiedFeishuCredentialFingerprint = defaults.string(forKey: PreferenceKey.verifiedFeishuCredentialFingerprint)
         alertCooldownMinutes = max(5, defaults.object(forKey: PreferenceKey.alertCooldownMinutes) as? Int ?? 30)
+        communityResetAlertsEnabled = defaults.object(forKey: PreferenceKey.communityResetAlertsEnabled) as? Bool ?? false
+        communityResetLocalNotificationsEnabled = defaults.object(forKey: PreferenceKey.communityResetLocalNotificationsEnabled) as? Bool ?? true
+        communityResetFeishuNotificationsEnabled = defaults.object(forKey: PreferenceKey.communityResetFeishuNotificationsEnabled) as? Bool ?? true
+        communityResetMinimumConfidencePercent = min(100, max(50, defaults.object(forKey: PreferenceKey.communityResetMinimumConfidencePercent) as? Int ?? 85))
+        communityResetFutureWindowHours = min(24, max(1, defaults.object(forKey: PreferenceKey.communityResetFutureWindowHours) as? Int ?? 24))
+        communityResetFirstAlertEnabled = defaults.object(forKey: PreferenceKey.communityResetFirstAlertEnabled) as? Bool ?? true
+        communityReset60MinuteAlertEnabled = defaults.bool(forKey: PreferenceKey.communityReset60MinuteAlertEnabled)
+        communityReset30MinuteAlertEnabled = defaults.bool(forKey: PreferenceKey.communityReset30MinuteAlertEnabled)
+        communityResetCompletionAlertEnabled = defaults.object(forKey: PreferenceKey.communityResetCompletionAlertEnabled) as? Bool ?? true
         apiConnectors = Self.sanitizeAPIConfigurations(defaults.data(forKey: PreferenceKey.apiConnectors).flatMap { try? JSONDecoder().decode([APIConnectorConfiguration].self, from: $0) } ?? [])
+        // New installs default to direct biometric authentication. Existing
+        // explicit user choices remain untouched.
+        useSystemVaultAuthentication = defaults.object(forKey: PreferenceKey.systemVaultAuthentication) as? Bool ?? true
         let statsAreToday = defaults.string(forKey: PreferenceKey.statsDate) == today
         completedFocusToday = statsAreToday ? defaults.integer(forKey: PreferenceKey.completed) : 0
         skippedToday = statsAreToday ? defaults.integer(forKey: PreferenceKey.skipped) : 0
@@ -274,7 +341,7 @@ final class MonitorStore: ObservableObject {
         pomodoroSecondsRemaining = focusMinutes * 60
 
         pathObserver.onUpdate = { [weak self] path in Task { @MainActor in self?.apply(path: path) } }
-        clashWatcher.onChange = { [weak self] in Task { @MainActor in self?.refreshClashQuota() } }
+        clashWatcher.onChange = { [weak self] in Task { @MainActor in self?.handleClashMetadataChange() } }
         updateWorkStatus(notify: false)
         refreshActivityRankings()
         // Persist configuration migrations (including the built-in Codex
@@ -286,6 +353,7 @@ final class MonitorStore: ObservableObject {
         guard metricTask == nil else { return }
         pathObserver.start()
         clashWatcher.start()
+        configureClashWatcher()
         mainThreadResponsivenessMonitor.start()
         observeWorkspaceSession()
         panelShownObserver = NotificationCenter.default.addObserver(forName: .pulseDockPanelShown, object: nil, queue: .main) { [weak self] _ in
@@ -321,8 +389,11 @@ final class MonitorStore: ObservableObject {
         communityResetTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                self.codexCommunityReset = await self.communityResetService.read()
-                try? await Task.sleep(for: .seconds(1_800))
+                let result = await self.communityResetService.readRecords()
+                guard !Task.isCancelled else { return }
+                self.applyCommunityResetRead(result)
+                let delay = self.communityResetNextPollDelay(result)
+                try? await Task.sleep(for: .seconds(delay))
             }
         }
         weatherTask = Task { [weak self] in
@@ -333,7 +404,13 @@ final class MonitorStore: ObservableObject {
             }
         }
         clashTask = Task { [weak self] in
-            while !Task.isCancelled { try? await Task.sleep(for: .seconds(300)); await self?.refreshClashQuotaAsync() }
+            while !Task.isCancelled {
+                guard let self else { return }
+                let seconds = self.sessionActive ? 60 : 300
+                try? await Task.sleep(for: .seconds(seconds))
+                guard !Task.isCancelled else { return }
+                await self.runScheduledClashRefresh()
+            }
         }
         clockTask = Task { [weak self] in
             while !Task.isCancelled { try? await Task.sleep(for: .seconds(1)); self?.tickClock() }
@@ -407,10 +484,11 @@ final class MonitorStore: ObservableObject {
     func refreshCommunityReset() {
         guard !isRefreshingCommunityReset else { return }
         isRefreshingCommunityReset = true
-        codexCommunityReset = .loading
+        if codexCommunityReset.state != .available { codexCommunityReset = .loading }
         Task { [weak self] in
             guard let self else { return }
-            self.codexCommunityReset = await self.communityResetService.read()
+            let result = await self.communityResetService.readRecords()
+            self.applyCommunityResetRead(result)
             self.isRefreshingCommunityReset = false
         }
     }
@@ -418,6 +496,181 @@ final class MonitorStore: ObservableObject {
     func openCommunityResetSource() {
         guard let url = codexCommunityReset.sourceURL else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    func resetCommunityResetAlertHistory() {
+        communityResetAlertLedger.reset()
+        communityResetFirstSeenAt = nil
+        communityResetLastDeliveryStatus = "本地去重记录已重置"
+    }
+
+    func testCommunityResetAlert() {
+        guard communityResetAlertsEnabled else {
+            communityResetLastDeliveryStatus = "请先启用社区额度重置预警"
+            return
+        }
+        let body = "这是测试提醒。第三方社区信号不代表 OpenAI 官方承诺；不会读取或发送你的账户额度。"
+        if communityResetLocalNotificationsEnabled {
+            PulseDockNotifications.send(title: "额度重置预警（社区信号）", body: body)
+        }
+        if feishuAlertsEnabled, hasVerifiedFeishuCredential {
+            Task { [weak self] in
+                guard let self else { return }
+                let result = await self.feishuAlertService.send(webhook: self.feishuWebhook, signingSecret: self.feishuSigningSecret, title: "额度重置预警（社区信号）", body: body)
+                self.communityResetLastDeliveryStatus = result.success ? "测试飞书消息已发送" : "测试飞书发送失败：\(result.evidence)"
+            }
+        } else {
+            communityResetLastDeliveryStatus = communityResetLocalNotificationsEnabled ? "本地测试通知已提交；飞书需先在“飞书告警”发送测试" : "飞书需先在“飞书告警”发送测试"
+        }
+    }
+
+    private func applyCommunityResetRead(_ result: CodexCommunityResetReadResult) {
+        if !result.wasSuccessful,
+           result.snapshot.state == .unavailable,
+           codexCommunityReset.state == .available {
+            // Defensive final layer: if an old release has no readable cache
+            // yet, a malformed/failed response must not erase an already
+            // visible valid signal during this process.
+            codexCommunityReset.isStale = true
+            codexCommunityReset.checkedAt = Date()
+            codexCommunityReset.message = "社区数据暂时不可用，正在显示上次成功信号"
+        } else {
+            codexCommunityReset = result.snapshot
+        }
+        guard result.wasSuccessful else { return }
+        communityResetFailureCount = 0
+        processCommunityResetRecords(result.snapshot.records, now: result.snapshot.checkedAt ?? Date())
+    }
+
+    private func communityResetNextPollDelay(_ result: CodexCommunityResetReadResult) -> TimeInterval {
+        if let retryAfter = result.retryAfter { return max(1, retryAfter) }
+        if result.wasSuccessful {
+            // 0–30 s jitter keeps a number of local clients from synchronizing.
+            return 300 + TimeInterval(Int.random(in: 0...30))
+        }
+        communityResetFailureCount = min(3, communityResetFailureCount + 1)
+        return [300, 900, 1_800][communityResetFailureCount - 1]
+    }
+
+    private func processCommunityResetRecords(_ records: [CodexCommunityResetRecord], now: Date) {
+        // First establish the full batch's local history. A completion can be
+        // returned before its related schedule due to server ordering; it must
+        // see that schedule as observed in this same successful read.
+        var eligibility: [String: Bool] = [:]
+        for record in records { eligibility[record.id] = isEligibleCommunitySchedule(record, now: now) }
+        let minimumConfidence = Double(communityResetMinimumConfidencePercent) / 100
+        var wasKnown: [String: Bool] = [:]
+        var changed: [String: Bool] = [:]
+        for record in records {
+            let eligible = eligibility[record.id] ?? false
+            wasKnown[record.id] = communityResetAlertLedger.hasObserved(record.id)
+            changed[record.id] = communityResetAlertLedger.hasMeaningfulChange(record, minimumConfidence: minimumConfidence)
+            _ = communityResetAlertLedger.observe(record, now: now, eligibleSchedule: eligible)
+        }
+        for record in records {
+            let eligible = eligibility[record.id] ?? false
+            guard communityResetAlertsEnabled else { continue }
+
+            if eligible {
+                if communityResetFirstAlertEnabled { deliverCommunityReset(record, stage: .firstSeen, now: now) }
+                if changed[record.id] == true { deliverCommunityReset(record, stage: .changed, now: now) }
+                guard let effectiveAt = record.effectiveAt else { continue }
+                let seconds = effectiveAt.timeIntervalSince(now)
+                // Never reconstruct stale intermediate countdown notices after
+                // an offline gap. New discoveries receive the first-seen alert
+                // only; countdown notices apply from a later observation.
+                if wasKnown[record.id] == true, communityReset60MinuteAlertEnabled, seconds > 0, seconds <= 3_600 { deliverCommunityReset(record, stage: .before60Minutes, now: now) }
+                if wasKnown[record.id] == true, communityReset30MinuteAlertEnabled, seconds > 0, seconds <= 1_800 { deliverCommunityReset(record, stage: .before30Minutes, now: now) }
+            }
+
+            guard communityResetCompletionAlertEnabled, record.isCompletion else { continue }
+            let related = record.relatedRecordIDs + [record.completionRecordID].compactMap { $0 }
+            // A completion first seen after app launch is history, not an
+            // opportunity to prepare. Only confirm a schedule we saw earlier.
+            guard related.contains(where: { communityResetAlertLedger.hasObservedEligibleSchedule($0) }) ||
+                    (record.kind == "reset_scheduled" && communityResetAlertLedger.hasObservedEligibleSchedule(record.id)) else { continue }
+            deliverCommunityReset(record, stage: .completed, now: now)
+        }
+        let current = records.filter(\.isPendingSchedule).sorted {
+            ($0.effectiveAt ?? .distantFuture) < ($1.effectiveAt ?? .distantFuture)
+        }.first
+        communityResetFirstSeenAt = current.flatMap { communityResetAlertLedger.firstSeenAt(for: $0.id) }
+    }
+
+    private func isEligibleCommunitySchedule(_ record: CodexCommunityResetRecord, now: Date) -> Bool {
+        guard record.isPendingSchedule,
+              record.isExactExplicitSchedule,
+              let effectiveAt = record.effectiveAt,
+              effectiveAt > now,
+              effectiveAt.timeIntervalSince(now) <= TimeInterval(communityResetFutureWindowHours * 3_600),
+              let confidence = record.confidence,
+              confidence >= Double(communityResetMinimumConfidencePercent) / 100,
+              record.scopeLabel != nil else { return false }
+        return true
+    }
+
+    private func deliverCommunityReset(_ record: CodexCommunityResetRecord, stage: CommunityResetAlertLedger.Stage, now: Date) {
+        let localEnabled = communityResetLocalNotificationsEnabled
+        let feishuEnabled = feishuAlertsEnabled && hasVerifiedFeishuCredential
+        guard localEnabled || feishuEnabled else {
+            communityResetLastDeliveryStatus = "未启用可用通知通道"
+            return
+        }
+        let title: String
+        let body: String
+        switch stage {
+        case .firstSeen:
+            title = "额度重置预警（社区信号）"
+            body = communityResetWarningBody(record, prefix: "发现可信的未来重置计划；可按需安排剩余额度。")
+        case .changed:
+            title = "额度重置计划已变更（社区信号）"
+            body = communityResetWarningBody(record, prefix: "第三方计划的时间、适用范围或确认度已发生重要变化。")
+        case .before60Minutes:
+            title = "额度重置预计 60 分钟内（社区信号）"
+            body = communityResetWarningBody(record, prefix: "第三方计划临近；请按需安排剩余额度。")
+        case .before30Minutes:
+            title = "额度重置预计 30 分钟内（社区信号）"
+            body = communityResetWarningBody(record, prefix: "第三方计划临近；请按需安排剩余额度。")
+        case .completed:
+            title = "额度重置已由第三方确认"
+            body = "第三方社区源已记录完成信号。该信息不代表 OpenAI 官方承诺，也不会验证你的个人额度。"
+        }
+        if localEnabled, !communityResetAlertLedger.wasDelivered(recordID: record.id, stage: stage, channel: .local) {
+            PulseDockNotifications.send(title: title, body: body)
+            communityResetAlertLedger.markDelivered(recordID: record.id, stage: stage, channel: .local, at: now)
+            communityResetLastDeliveryStatus = "本地通知已派发"
+        }
+        guard feishuEnabled, !communityResetAlertLedger.wasDelivered(recordID: record.id, stage: stage, channel: .feishu) else { return }
+        guard communityResetAlertLedger.claim(recordID: record.id, stage: stage, channel: .feishu, at: now) else {
+            if communityResetAlertLedger.hasClaim(recordID: record.id, stage: stage, channel: .feishu) {
+                communityResetLastDeliveryStatus = "飞书派发结果未确认，已保留去重以避免重复发送"
+            }
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            let result = await self.feishuAlertService.send(webhook: self.feishuWebhook, signingSecret: self.feishuSigningSecret, title: title, body: body)
+            if result.success {
+                self.communityResetAlertLedger.markDelivered(recordID: record.id, stage: stage, channel: .feishu)
+                self.communityResetLastDeliveryStatus = "飞书提醒已派发"
+            } else if result.outcome == .retryableFailure {
+                self.communityResetAlertLedger.releaseForRetry(recordID: record.id, stage: stage, channel: .feishu)
+                self.communityResetLastDeliveryStatus = "飞书发送失败：\(result.evidence)；将按 5/15/30 分钟有限退避重试"
+            } else {
+                // The durable reservation remains after a failure or timeout:
+                // a server may have accepted the message before the response
+                // was lost. The explicit reset action is the safe retry path.
+                self.communityResetLastDeliveryStatus = "飞书派发结果未确认：\(result.evidence)；已避免自动重复发送"
+            }
+        }
+    }
+
+    private func communityResetWarningBody(_ record: CodexCommunityResetRecord, prefix: String) -> String {
+        let time = record.effectiveAt?.formatted(date: .numeric, time: .shortened) ?? "具体时间未公布"
+        let confidence = record.confidence.map { "\(Int(($0 * 100).rounded()))%" } ?? "未知"
+        let scope = record.scopeLabel ?? "适用范围不明"
+        let source = record.sourceURL.map { "\n来源：\($0.absoluteString)" } ?? ""
+        return "\(prefix)\n预计：\(time) · 确认度：\(confidence) · 适用：\(scope)\n第三方社区信号，不代表 OpenAI 官方承诺。\(source)"
     }
 
     func searchWeatherCities() {
@@ -466,7 +719,7 @@ final class MonitorStore: ObservableObject {
         weatherLocationDiagnostic = ""
         weatherLocationDiagnosticKind = nil
         weatherLocationStatus = "正在获取当前位置（最长 20 秒）…"
-        currentLocationService.requestCurrentCity { [weak self] result in
+        currentLocationService.requestCurrentCity(allowAuthorizationPrompt: true) { [weak self] result in
             guard let self else { return }
             guard generation == self.weatherSelectionGeneration else { return }
             self.weatherLocationInProgress = false
@@ -486,7 +739,7 @@ final class MonitorStore: ObservableObject {
         if mode == .fixed, weatherLocationInProgress { cancelCurrentWeatherLocation() }
     }
 
-    func requestAutomaticWeatherLocation(force: Bool) {
+    func requestAutomaticWeatherLocation(force: Bool, allowAuthorizationPrompt: Bool = false) {
         guard weatherLocationMode == .automatic, !weatherLocationInProgress else { return }
         let windowVisible = NSApp.windows.contains(where: \.isVisible)
         let minimumInterval: TimeInterval = windowVisible ? 1_800 : 7_200
@@ -501,7 +754,7 @@ final class MonitorStore: ObservableObject {
         weatherLocationStatus = "正在检查当前位置（最长 20 秒）…"
         lastWeatherLocationCheck = Date()
         UserDefaults.standard.set(lastWeatherLocationCheck, forKey: PreferenceKey.lastWeatherLocationCheck)
-        currentLocationService.requestCurrentCity { [weak self] result in
+        currentLocationService.requestCurrentCity(allowAuthorizationPrompt: allowAuthorizationPrompt) { [weak self] result in
             guard let self, generation == self.weatherSelectionGeneration else { return }
             self.weatherLocationInProgress = false
             switch result {
@@ -830,17 +1083,51 @@ final class MonitorStore: ObservableObject {
             // and retain the state briefly so a manual refresh has visible,
             // trustworthy feedback instead of looking like a dead button.
             await Task.yield()
-            if self.clashControllerEnabled {
-                let sync = await self.clashControllerService.synchronize(baseURL: self.clashControllerURL, secret: self.clashControllerSecret)
-                self.clashSyncEvidence = sync.evidence
-                self.eventLedger.append(category: .clash, severity: sync.success ? .healthy : .warning, title: sync.success ? "Clash 已请求同步" : "Clash 同步失败", evidence: sync.evidence, source: "Mihomo 本地控制器")
-                self.timelineEvents = self.eventLedger.events
-            } else {
-                self.clashSyncEvidence = "控制器同步未启用，仅重读本地订阅元数据"
-            }
+            self.clashSyncEvidence = self.clashControllerEnabled
+                ? "正在观察本机控制器与本地订阅元数据（不会请求机场刷新）"
+                : "正在重读本地订阅元数据"
             await self.refreshClashQuotaAsync(expectedGeneration: generation)
             try? await Task.sleep(for: .milliseconds(450))
             self.isRefreshingClash = false
+        }
+    }
+
+    /// An explicit user action asks Mihomo to refresh providers immediately.
+    func synchronizeClashAndRefresh() {
+        Task { [weak self] in await self?.synchronizeClashAndRefreshAsync(automatic: false) }
+    }
+
+    private func synchronizeClashAndRefreshAsync(automatic: Bool) async {
+        guard credentialVaultUnlocked, clashControllerEnabled, !isRefreshingClash else { return }
+        isRefreshingClash = true
+        defer { isRefreshingClash = false }
+        let generation = quotaAccessGeneration
+        let sync = await clashControllerService.synchronize(baseURL: clashControllerURL, secret: clashControllerSecret)
+        clashSyncEvidence = sync.evidence
+        if automatic {
+            UserDefaults.standard.set(Date(), forKey: PreferenceKey.lastClashAutomaticProviderSyncAt)
+            clashAutomaticProviderSyncStatus = sync.success
+                ? "已自动请求更新订阅；随后已重读额度"
+                : "自动更新订阅失败：\(sync.evidence)"
+        } else {
+            eventLedger.append(category: .clash, severity: sync.success ? .healthy : .warning, title: sync.success ? "Clash 已请求同步" : "Clash 同步失败", evidence: sync.evidence, source: "Mihomo 本地控制器（用户操作）")
+            timelineEvents = eventLedger.events
+        }
+        await refreshClashQuotaAsync(expectedGeneration: generation)
+    }
+
+    private func runScheduledClashRefresh() async {
+        guard credentialVaultUnlocked else { return }
+        let now = Date()
+        let last = UserDefaults.standard.object(forKey: PreferenceKey.lastClashAutomaticProviderSyncAt) as? Date
+        let interval = TimeInterval(clashAutomaticProviderSyncIntervalMinutes * 60)
+        if clashAutomaticProviderSyncEnabled,
+           clashControllerEnabled,
+           !isRefreshingClash,
+           last.map({ now.timeIntervalSince($0) >= interval }) ?? true {
+            await synchronizeClashAndRefreshAsync(automatic: true)
+        } else {
+            await refreshClashQuotaAsync()
         }
     }
 
@@ -876,29 +1163,44 @@ final class MonitorStore: ObservableObject {
     /// One explicit user action unlocks one vault Keychain item. No feature is
     /// allowed to read a secret by itself afterwards.
     func unlockCredentialVault() {
-        switch CredentialVaultService.unlock() {
-        case let .unlocked(vault):
-            credentialVault = vault
-            applyCredentialVault()
-            credentialVaultUnlocked = true
-            quotaAccessGeneration += 1
-            credentialVaultStatus = "已解锁；本次运行只读取一次统一保险库"
-            refreshClashQuota()
-            refreshQuota()
-            refreshAPIConnectors()
-        case .missing:
-            credentialVault = CredentialVault()
-            applyCredentialVault()
-            credentialVaultUnlocked = true
-            quotaAccessGeneration += 1
-            credentialVaultStatus = "新保险库已解锁；旧版分散凭据不会自动读取"
-            refreshClashQuota()
-            refreshQuota()
-            refreshAPIConnectors()
-        case .interactionRequired:
-            credentialVaultStatus = "钥匙串未允许读取；可在钥匙串访问中删除旧 PulseDock 项目后重新保存"
-        case let .failed(status):
-            credentialVaultStatus = "凭据保险库读取失败（OSStatus \(status)）"
+        guard !isUnlockingCredentialVault else { return }
+        isUnlockingCredentialVault = true
+        credentialVaultStatus = useSystemVaultAuthentication ? "正在请求系统验证…" : "正在请求登录钥匙串密码…"
+        Task { [weak self] in
+            guard let self else { return }
+            let result = await CredentialVaultService.unlock(preferSystemAuthentication: self.useSystemVaultAuthentication)
+            self.isUnlockingCredentialVault = false
+            switch result {
+            case let .unlocked(vault, origin):
+                self.credentialVault = vault
+                self.applyCredentialVault()
+                self.credentialVaultUnlocked = true
+                self.quotaAccessGeneration += 1
+                self.credentialVaultStatus = switch origin {
+                case .systemAuthentication: "已通过 Touch ID 解锁；本次运行只读取一次统一保险库"
+                case .legacyPassword: "已用登录钥匙串密码解锁"
+                }
+                self.refreshClashQuota()
+                self.refreshQuota()
+                self.refreshAPIConnectors()
+            case .missing:
+                self.credentialVault = CredentialVault()
+                self.applyCredentialVault()
+                self.credentialVaultUnlocked = true
+                self.quotaAccessGeneration += 1
+                self.credentialVaultStatus = self.useSystemVaultAuthentication
+                    ? "已通过 Touch ID 新建保险库；填写并保存凭据后即可使用"
+                    : "新保险库已解锁；旧版分散凭据不会自动读取"
+                self.refreshClashQuota()
+                self.refreshQuota()
+                self.refreshAPIConnectors()
+            case .interactionRequired:
+                self.credentialVaultStatus = self.useSystemVaultAuthentication
+                    ? "Touch ID/系统验证未完成；未读取旧登录钥匙串，也没有请求密码"
+                    : "登录钥匙串密码未获允许；请重试"
+            case let .failed(status):
+                self.credentialVaultStatus = "凭据保险库读取失败（OSStatus \(status)）"
+            }
         }
     }
 
@@ -934,6 +1236,7 @@ final class MonitorStore: ObservableObject {
         isRefreshingClash = false
         credentialVault = CredentialVault()
         apiConnectorKeyCache.removeAll()
+        invalidateFeishuVerification()
         clashControllerSecret = ""
         feishuWebhook = ""
         feishuSigningSecret = ""
@@ -952,9 +1255,9 @@ final class MonitorStore: ObservableObject {
         credentialVault["feishu-webhook"] = feishuWebhook
         credentialVault["feishu-signing-secret"] = feishuSigningSecret
         for (id, key) in apiConnectorKeyCache { credentialVault[apiCredentialKey(id)] = key }
-        switch CredentialVaultService.saveAfterUnlock(credentialVault) {
+        switch CredentialVaultService.saveAfterUnlock(credentialVault, systemAuthenticated: useSystemVaultAuthentication) {
         case .saved:
-            credentialVaultStatus = "已保存全部变更；本次运行不会再次请求钥匙串"
+            credentialVaultStatus = useSystemVaultAuthentication ? "已保存到 Touch ID 保险库；旧登录钥匙串未被读取或修改" : "已保存全部变更；本次运行不会再次请求钥匙串"
             clashCredentialStatus = "使用统一凭据保险库"
             feishuCredentialStatus = "使用统一凭据保险库"
         case .removed:
@@ -1059,7 +1362,7 @@ final class MonitorStore: ObservableObject {
             }
         }
         if !result.imported.isEmpty {
-            _ = CredentialVaultService.saveAfterUnlock(credentialVault)
+            _ = CredentialVaultService.saveAfterUnlock(credentialVault, systemAuthenticated: useSystemVaultAuthentication)
         }
         return result
     }
@@ -1078,6 +1381,17 @@ final class MonitorStore: ObservableObject {
             if lhs.element.sortOrder != rhs.element.sortOrder { return lhs.element.sortOrder < rhs.element.sortOrder }
             return lhs.offset < rhs.offset
         }.map(\.element)
+    }
+
+    var filteredRemoteDevices: [RemoteDeviceConfiguration] {
+        let query = remoteSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        return orderedRemoteDevices.filter { device in
+            let snapshot = remoteSnapshots[device.id] ?? RemoteDeviceSnapshot(id: device.id)
+            let matchesQuery = query.isEmpty || device.name.localizedCaseInsensitiveContains(query) || device.sshAlias.localizedCaseInsensitiveContains(query)
+            let matchesHealth = remoteHealthFilter == "all" || snapshot.health.rawValue == remoteHealthFilter
+            let matchesScope = remoteScopeFilter == "all" || device.networkScope.rawValue == remoteScopeFilter
+            return matchesQuery && matchesHealth && matchesScope
+        }
     }
 
     var orderedAPIConnectors: [APIConnectorConfiguration] {
@@ -1220,39 +1534,21 @@ final class MonitorStore: ObservableObject {
     func observeRemoteDevice(_ id: UUID) {
         remoteObservationUntil[id] = Date().addingTimeInterval(120)
         remoteActionFeedback[id] = "已开启 2 分钟实时观察（每 5 秒刷新）"
-        refreshRemoteDevices()
+        refreshRemoteDevice(id)
     }
 
-    func refreshRemoteDevices() { Task { [weak self] in await self?.refreshRemoteDevicesAsync(force: true) } }
+    func refreshRemoteDevices() {
+        remoteManualRequested.formUnion(remoteDevices.filter(\.enabled).map(\.id))
+        Task { [weak self] in await self?.refreshRemoteDevicesAsync(force: true) }
+    }
 
     func refreshRemoteDevice(_ id: UUID) {
-        guard let device = remoteDevices.first(where: { $0.id == id }), !refreshingRemoteDeviceIDs.contains(id) else { return }
-        refreshingRemoteDeviceIDs.insert(id)
-        remoteActionFeedback[id] = "正在判断设备网络范围…"
-        Task { [weak self] in
-            guard let self else { return }
-            if let reason = await self.remoteScopeUnavailableReason(device) {
-                self.remoteSnapshots[id] = RemoteDeviceSnapshot(id: id, health: .expectedOffline, checkedAt: Date(), message: reason)
-                self.refreshingRemoteDeviceIDs.remove(id)
-                self.remoteFailureStreak[id] = 0
-                self.remoteActionFeedback[id] = "当前不在设备网络范围，已暂停探测"
-                return
-            }
-            self.remoteActionFeedback[id] = "正在重新连接 SSH…"
-            let snapshot = await self.sshMonitorService.probe(device)
-            if let currentDevice = self.remoteDevices.first(where: { $0.id == id }),
-               let reason = await self.remoteScopeUnavailableReason(currentDevice) {
-                self.remoteSnapshots[id] = RemoteDeviceSnapshot(id: id, health: .expectedOffline, checkedAt: Date(), message: reason)
-                self.remoteFailureStreak[id] = 0
-            } else {
-                self.applyRemoteSnapshot(snapshot)
-            }
-            self.refreshingRemoteDeviceIDs.remove(id)
-            let applied = self.remoteSnapshots[id] ?? snapshot
-            self.remoteActionFeedback[id] = applied.health == .expectedOffline
-                ? "网络范围已变化，设备探测已暂停"
-                : (applied.health == .healthy ? "刷新完成：SSH 与端点正常" : "刷新完成：\(applied.message)")
-        }
+        guard remoteDevices.contains(where: { $0.id == id && $0.enabled }) else { return }
+        // A one-device click joins the same bounded queue as every periodic
+        // probe; it can outrank the queue but can never create a fourth SSH.
+        remoteManualRequested.insert(id)
+        remoteActionFeedback[id] = "已加入优先探测队列…"
+        Task { [weak self] in await self?.refreshRemoteDevicesAsync(force: true) }
     }
 
     func copyRemoteDiagnostic(_ id: UUID) {
@@ -1276,7 +1572,38 @@ final class MonitorStore: ObservableObject {
             guard let self else { return }
             let result = await self.feishuAlertService.send(webhook: self.feishuWebhook, signingSecret: self.feishuSigningSecret, title: "连接测试", body: "飞书告警连接正常。此消息不包含设备或账户秘密。")
             self.feishuTestStatus = result.evidence
+            if result.success {
+                self.verifiedFeishuCredentialFingerprint = self.feishuCredentialFingerprint()
+                if let fingerprint = self.verifiedFeishuCredentialFingerprint {
+                    UserDefaults.standard.set(fingerprint, forKey: PreferenceKey.verifiedFeishuCredentialFingerprint)
+                }
+                self.feishuCredentialStatus = "机器人连接已验证；社区预警可使用飞书"
+            }
         }
+    }
+
+    private func invalidateFeishuVerification() {
+        verifiedFeishuCredentialFingerprint = nil
+        UserDefaults.standard.removeObject(forKey: PreferenceKey.verifiedFeishuCredentialFingerprint)
+    }
+
+    func noteFeishuCredentialsEdited() {
+        // Applying an already-verified vault back into the UI should not force
+        // a needless new test. Only a material credential change invalidates
+        // the marker that permits community notifications.
+        guard verifiedFeishuCredentialFingerprint != feishuCredentialFingerprint() else { return }
+        invalidateFeishuVerification()
+    }
+
+    private func feishuCredentialFingerprint() -> String? {
+        guard !feishuWebhook.isEmpty else { return nil }
+        let material = Data("\(feishuWebhook)\n\(feishuSigningSecret)".utf8)
+        return SHA256.hash(data: material).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private var hasVerifiedFeishuCredential: Bool {
+        guard credentialVaultUnlocked, let fingerprint = feishuCredentialFingerprint() else { return false }
+        return fingerprint == verifiedFeishuCredentialFingerprint
     }
 
     func addAPIConnector() {
@@ -1430,6 +1757,7 @@ final class MonitorStore: ObservableObject {
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         UserDefaults.standard.set(url.path, forKey: PreferenceKey.customClashPath)
+        configureClashWatcher()
         if credentialVaultUnlocked { refreshClashQuota() }
     }
 
@@ -1651,29 +1979,17 @@ final class MonitorStore: ObservableObject {
     }
 
     private func beginTimeline(key: String, category: TimelineCategory, severity: TimelineSeverity, title: String, evidence: String, source: String) {
-        let isNew = !eventLedger.events.contains { $0.key == key && $0.recoveredAt == nil }
         eventLedger.beginOrUpdate(key: key, category: category, severity: severity, title: title, evidence: evidence, source: source)
         timelineEvents = eventLedger.events
-        if isNew, severity == .warning || severity == .critical { deliverAlert(key: key, title: title, body: "\(evidence)\n来源：\(source)") }
+        // Device, network, quota and thermal events remain in the local
+        // timeline. Feishu is deliberately reserved for community quota-reset
+        // alerts so routine device state cannot become an external reminder.
     }
 
     private func recoverTimeline(key: String, evidence: String) {
-        let active = eventLedger.events.first { $0.key == key && $0.recoveredAt == nil }
         eventLedger.recover(key: key, evidence: evidence); timelineEvents = eventLedger.events
-        if let active { deliverAlert(key: "\(key).recovered", title: "已恢复：\(active.title)", body: "\(evidence)\n持续：\(active.durationLabel)") }
     }
 
-    private func deliverAlert(key: String, title: String, body: String) {
-        guard feishuAlertsEnabled, !feishuWebhook.isEmpty else { return }
-        let date = Date(); let cooldown = TimeInterval(alertCooldownMinutes * 60)
-        guard lastAlertAt[key].map({ date.timeIntervalSince($0) >= cooldown }) ?? true else { return }
-        lastAlertAt[key] = date
-        Task { [weak self] in
-            guard let self else { return }
-            let result = await self.feishuAlertService.send(webhook: self.feishuWebhook, signingSecret: self.feishuSigningSecret, title: title, body: body)
-            if !result.success { self.feishuTestStatus = "最近发送失败：\(result.evidence)" }
-        }
-    }
 
     private func evaluateQuotaState() {
         if let remaining = codexQuota.riskRemainingPercent, remaining <= 15 {
@@ -1708,14 +2024,24 @@ final class MonitorStore: ObservableObject {
     private func refreshRemoteDevicesAsync(force: Bool = false) async {
         guard !isRefreshingRemoteDevices else { return }
         let now = Date()
-        let candidates = remoteDevices.filter { device in
-            guard device.enabled, !refreshingRemoteDeviceIDs.contains(device.id) else { return false }
-            if force { return true }
-            let interval = remoteObservationUntil[device.id].map { $0 > now } == true ? 5 : max(15, device.intervalSeconds)
-            return now.timeIntervalSince(lastRemoteProbeAt[device.id] ?? .distantPast) >= Double(interval)
+        if force { remoteManualRequested.formIntersection(Set(remoteDevices.map(\.id))) }
+        let candidates = remoteDevices.map { device in
+            let snapshot = remoteSnapshots[device.id] ?? RemoteDeviceSnapshot(id: device.id)
+            return RemoteProbeScheduler.Candidate(
+                id: device.id, enabled: device.enabled, intervalSeconds: device.intervalSeconds,
+                pinned: device.pinned, health: snapshot.health, lastProbeAt: lastRemoteProbeAt[device.id],
+                failureStreak: remoteFailureStreak[device.id] ?? 0,
+                observing: remoteObservationUntil[device.id].map { $0 > now } == true,
+                manual: remoteManualRequested.contains(device.id)
+            )
         }
+        // Keep the entire due queue in priority order. The task group below
+        // admits only its first three members and replenishes each free slot.
+        let selectedIDs = Set(RemoteProbeScheduler.select(candidates, activeIDs: refreshingRemoteDeviceIDs, now: now, limit: candidates.count))
+        let selected = remoteDevices.filter { selectedIDs.contains($0.id) }
+        guard !selected.isEmpty else { return }
         var unavailableReasons: [UUID: String] = [:]
-        for device in candidates {
+        for device in selected {
             if let reason = await remoteScopeUnavailableReason(device) {
                 unavailableReasons[device.id] = reason
                 remoteSnapshots[device.id] = RemoteDeviceSnapshot(
@@ -1724,33 +2050,65 @@ final class MonitorStore: ObservableObject {
                 )
                 lastRemoteProbeAt[device.id] = now
                 remoteFailureStreak[device.id] = 0
+                remoteManualRequested.remove(device.id)
                 // A paused probe is not evidence that an existing SSH incident
                 // recovered. Only a later healthy snapshot may close it.
             }
         }
-        let enabled = candidates.filter { unavailableReasons[$0.id] == nil }
+        let enabled = selected.filter { unavailableReasons[$0.id] == nil }
         guard !enabled.isEmpty else { return }
         isRefreshingRemoteDevices = true
-        refreshingRemoteDeviceIDs.formUnion(enabled.map(\.id))
-        // Bound SSH subprocesses to three at a time. A large device list must
-        // not create a burst of processes, sockets and password-agent prompts.
-        for start in stride(from: 0, to: enabled.count, by: 3) {
-            let chunk = Array(enabled[start..<min(start + 3, enabled.count)])
-            await withTaskGroup(of: RemoteDeviceSnapshot.self) { group in
-                for device in chunk {
-                    group.addTask { await self.sshMonitorService.probe(device) }
+        refreshingRemoteDeviceIDs.formUnion(enabled.prefix(3).map(\.id))
+        // Scheduler admission is capped at three, including manual clicks.
+        await withTaskGroup(of: RemoteDeviceSnapshot.self) { group in
+            var remaining = enabled
+            var activeIDs = Set(remaining.prefix(3).map(\.id))
+            var startedIDs: Set<UUID> = []
+            func start(_ device: RemoteDeviceConfiguration) {
+                activeIDs.insert(device.id)
+                startedIDs.insert(device.id)
+                group.addTask { await self.sshMonitorService.probe(device) }
+            }
+            for _ in 0..<min(3, remaining.count) { start(remaining.removeFirst()) }
+            for await snapshot in group {
+                if let currentDevice = remoteDevices.first(where: { $0.id == snapshot.id }),
+                   let reason = await remoteScopeUnavailableReason(currentDevice) {
+                    remoteSnapshots[snapshot.id] = RemoteDeviceSnapshot(
+                        id: snapshot.id, health: .expectedOffline, checkedAt: Date(), message: reason
+                    )
+                    remoteFailureStreak[snapshot.id] = 0
+                } else {
+                    applyRemoteSnapshot(snapshot)
                 }
-                for await snapshot in group {
-                    if let currentDevice = remoteDevices.first(where: { $0.id == snapshot.id }),
-                       let reason = await remoteScopeUnavailableReason(currentDevice) {
-                        remoteSnapshots[snapshot.id] = RemoteDeviceSnapshot(
-                            id: snapshot.id, health: .expectedOffline, checkedAt: Date(), message: reason
-                        )
-                        remoteFailureStreak[snapshot.id] = 0
-                    } else {
-                        applyRemoteSnapshot(snapshot)
+                remoteManualRequested.remove(snapshot.id)
+                refreshingRemoteDeviceIDs.remove(snapshot.id)
+                activeIDs.remove(snapshot.id)
+                // Re-rank unstarted work after every completion. A manual
+                // click received while SSH slots were full is therefore picked
+                // before normal queued devices at the next free slot.
+                while true {
+                    let queueNow = Date()
+                    // Rebuild from live store state, not the queue captured at
+                    // refresh start. A manual click arriving while all slots
+                    // were full must be eligible for this newly-free slot.
+                    let candidates = remoteDevices.filter { !startedIDs.contains($0.id) }.map { device in
+                        let state = remoteSnapshots[device.id] ?? RemoteDeviceSnapshot(id: device.id)
+                        return RemoteProbeScheduler.Candidate(id: device.id, enabled: device.enabled, intervalSeconds: device.intervalSeconds, pinned: device.pinned, health: state.health, lastProbeAt: lastRemoteProbeAt[device.id], failureStreak: remoteFailureStreak[device.id] ?? 0, observing: remoteObservationUntil[device.id].map { $0 > queueNow } == true, manual: remoteManualRequested.contains(device.id))
                     }
-                    refreshingRemoteDeviceIDs.remove(snapshot.id)
+                    guard let nextID = RemoteProbeScheduler.select(candidates, activeIDs: activeIDs, now: queueNow, limit: 1).first,
+                          let next = remoteDevices.first(where: { $0.id == nextID }) else { break }
+                    // Scope checks happen again immediately before SSH. A
+                    // paused device consumes no SSH slot; keep looking.
+                    if let reason = await remoteScopeUnavailableReason(next) {
+                        startedIDs.insert(next.id)
+                        remoteSnapshots[next.id] = RemoteDeviceSnapshot(id: next.id, health: .expectedOffline, checkedAt: queueNow, message: reason)
+                        lastRemoteProbeAt[next.id] = queueNow
+                        remoteFailureStreak[next.id] = 0
+                        remoteManualRequested.remove(next.id)
+                        continue
+                    }
+                    start(next)
+                    break
                 }
             }
         }
@@ -1924,13 +2282,44 @@ final class MonitorStore: ObservableObject {
         let generation = expectedGeneration ?? quotaAccessGeneration
         let custom = UserDefaults.standard.string(forKey: PreferenceKey.customClashPath).map { URL(fileURLWithPath: $0) }
         let local = await clashService.discover(customURL: custom)
-        let live = clashControllerEnabled ? await clashControllerService.providerUsage(baseURL: clashControllerURL, secret: clashControllerSecret) : []
+        let controllerRead = clashControllerEnabled
+            ? await clashControllerService.observeProviderUsage(baseURL: clashControllerURL, secret: clashControllerSecret)
+            : nil
+        let live = controllerRead?.snapshots ?? []
         guard credentialVaultUnlocked, generation == quotaAccessGeneration else { return }
         var merged = live
         var knownNames = Set(live.map { $0.name })
         merged.append(contentsOf: local.filter { knownNames.insert($0.name).inserted })
+        configureClashWatcher()
+        if let controllerRead, !controllerRead.reachable || (local.isEmpty && live.isEmpty) {
+            clashSyncEvidence = controllerRead.evidence
+        }
+        guard !merged.isEmpty else {
+            // A profile may be in the middle of an atomic replacement, or a
+            // controller may briefly restart. Preserve the last useful quota
+            // instead of replacing it with an empty/zero reading.
+            if !clashSubscriptions.isEmpty {
+                clashSyncEvidence += "；本次未读到完整数据，保留上次成功额度"
+            }
+            return
+        }
         clashSubscriptions = merged
         applySelectedClash()
+    }
+
+    private func configureClashWatcher() {
+        let custom = UserDefaults.standard.string(forKey: PreferenceKey.customClashPath).map { URL(fileURLWithPath: $0) }
+        Task { [weak self] in
+            guard let self else { return }
+            let directories = await self.clashService.watchedDirectories(customURL: custom)
+            self.clashWatcher.configure(directories: directories)
+        }
+    }
+
+    private func handleClashMetadataChange() {
+        clashSyncEvidence = "已从本机 Clash 配置目录检测到更新；正在重读"
+        configureClashWatcher()
+        refreshClashQuota()
     }
 
     private func applySelectedClash() {

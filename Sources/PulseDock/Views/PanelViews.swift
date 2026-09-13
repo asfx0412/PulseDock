@@ -163,7 +163,7 @@ private struct ExpandedPanel: View {
     @ObservedObject var state: PanelState
     @State private var tab = 0
     @State private var pendingExclusion: AppActivityRanking?
-    @State private var expandedRemoteIDs: Set<UUID> = []
+    @State private var selectedRemoteDeviceID: UUID?
     @State private var settingsRemoteID: UUID?
     @State private var timelineVisibleLimit = 60
     @State private var selectedCodexUsageDate: Date?
@@ -421,6 +421,22 @@ private struct ExpandedPanel: View {
                         FocusableTextField(text: $store.newRemoteAlias, placeholder: "~/.ssh/config 别名", onSubmit: store.addRemoteDevice).frame(height: 24)
                         Button("添加") { store.addRemoteDevice() }.disabled(store.newRemoteAlias.isEmpty)
                     }.controlSize(.small)
+                    HStack(spacing: 6) {
+                        FocusableTextField(text: $store.remoteSearchQuery, placeholder: "搜索名称或 SSH 别名").frame(height: 24)
+                        Picker("状态", selection: $store.remoteHealthFilter) {
+                            Text("全部状态").tag("all")
+                            Text("异常").tag(RemoteHealth.offline.rawValue)
+                            Text("部分异常").tag(RemoteHealth.degraded.rawValue)
+                            Text("健康").tag(RemoteHealth.healthy.rawValue)
+                            Text("暂停").tag(RemoteHealth.expectedOffline.rawValue)
+                        }.pickerStyle(.menu).labelsHidden().frame(width: 92)
+                        Picker("网络", selection: $store.remoteScopeFilter) {
+                            Text("全部网络").tag("all")
+                            ForEach(RemoteNetworkScope.allCases, id: \.self) { Text($0.shortLabel).tag($0.rawValue) }
+                        }.pickerStyle(.menu).labelsHidden().frame(width: 76)
+                    }.controlSize(.mini)
+                    Text("显示 \(store.filteredRemoteDevices.count) / \(store.remoteDevices.count) 台 · 手动、观察中、异常、置顶设备优先；SSH 同时最多 3 台。")
+                        .font(.system(size: 8)).foregroundStyle(.secondary)
                     Text("只使用本机 SSH 配置与 ssh-agent；探测命令固定、只读，不保存密码/私钥，不读取远端项目或训练日志。")
                         .font(.system(size: 8.5)).foregroundStyle(.secondary)
                 }
@@ -428,7 +444,8 @@ private struct ExpandedPanel: View {
             if store.remoteDevices.isEmpty {
                 Card { Text("尚未添加远程设备。可填写你在 ~/.ssh/config 中已有的 Host 别名。").font(.system(size: 10)).foregroundStyle(.secondary) }
             }
-            ForEach(store.orderedRemoteDevices) { device in
+            LazyVStack(spacing: 9) {
+            ForEach(store.filteredRemoteDevices) { device in
                 let snapshot = store.remoteSnapshots[device.id] ?? RemoteDeviceSnapshot(id: device.id)
                 Card {
                     VStack(alignment: .leading, spacing: 8) {
@@ -457,7 +474,7 @@ private struct ExpandedPanel: View {
                                     RemoteDeviceQuickSettings(store: store, deviceID: device.id) { settingsRemoteID = nil }
                                 }
                             Button {
-                                expandedRemoteIDs.remove(device.id)
+                                if selectedRemoteDeviceID == device.id { selectedRemoteDeviceID = nil }
                                 store.removeRemoteDevice(device.id)
                             } label: { Image(systemName: "trash") }.buttonStyle(.plain).foregroundStyle(.secondary)
                         }
@@ -470,7 +487,6 @@ private struct ExpandedPanel: View {
                         HStack(spacing: 5) {
                             Text(snapshot.message).lineLimit(1); Spacer(); Text(DataFreshness.label(snapshot.checkedAt, now: store.now))
                         }.font(.system(size: 8.5)).foregroundStyle(.secondary)
-                        if !snapshot.gpus.isEmpty { remoteMemoryOverview(snapshot.gpus) }
                         HStack(spacing: 6) {
                             Button { store.refreshRemoteDevice(device.id) } label: {
                                 Label(store.refreshingRemoteDeviceIDs.contains(device.id) ? "连接中" : "立即刷新", systemImage: "arrow.clockwise")
@@ -478,22 +494,18 @@ private struct ExpandedPanel: View {
                             Button { store.copyRemoteDiagnostic(device.id) } label: { Label("复制诊断", systemImage: "doc.on.doc") }.controlSize(.mini)
                             Button { store.observeRemoteDevice(device.id) } label: { Label("观察 2 分钟", systemImage: "eye") }.controlSize(.mini)
                             Spacer()
-                            Button(expandedRemoteIDs.contains(device.id) ? "收起详情" : "展开详情") {
-                                if expandedRemoteIDs.contains(device.id) {
-                                    expandedRemoteIDs.remove(device.id)
-                                } else if expandedRemoteIDs.count < 4 {
-                                    expandedRemoteIDs.insert(device.id)
-                                }
+                            Button(selectedRemoteDeviceID == device.id ? "收起详情" : "查看详情") {
+                                selectedRemoteDeviceID = selectedRemoteDeviceID == device.id ? nil : device.id
                             }
-                            .disabled(!expandedRemoteIDs.contains(device.id) && expandedRemoteIDs.count >= 4)
                             .controlSize(.mini)
                         }
                         if let feedback = store.remoteActionFeedback[device.id] {
                             Text(feedback).font(.system(size: 8)).foregroundStyle(.secondary).lineLimit(1)
                         }
-                        if expandedRemoteIDs.contains(device.id) { remoteDetail(device: device, snapshot: snapshot) }
+                        if selectedRemoteDeviceID == device.id { remoteDetail(device: device, snapshot: snapshot) }
                     }
                 }
+            }
             }
         }
     }
@@ -540,6 +552,7 @@ private struct ExpandedPanel: View {
     private func remoteDetail(device: RemoteDeviceConfiguration, snapshot: RemoteDeviceSnapshot) -> some View {
         Divider()
         VStack(alignment: .leading, spacing: 6) {
+            if !snapshot.gpus.isEmpty { remoteMemoryOverview(snapshot.gpus) }
             Text("Codex 发现：\(snapshot.codexFound ? snapshot.codexVersion ?? "已发现" : "默认探测环境未发现")").font(.system(size: 9, weight: .semibold))
             Text(snapshot.codexDiscoveryDetail).font(.system(size: 8.5)).foregroundStyle(.secondary).textSelection(.enabled)
             Text("Codex 端点（独立诊断）：\(snapshot.codexEndpointDetail)").font(.system(size: 8.5)).foregroundStyle(endpointColor(snapshot)).textSelection(.enabled)
@@ -803,7 +816,7 @@ private struct ExpandedPanel: View {
                         Spacer()
                         if store.codexCommunityReset.sourceURL != nil { Button("查看来源") { store.openCommunityResetSource() }.controlSize(.mini) }
                     }.font(.system(size: 8.5)).foregroundStyle(.secondary)
-                    Text("上游：\(store.codexCommunityReset.sourceGeneratedAt?.formatted(date: .omitted, time: .shortened) ?? "--") · 本机获取：\(store.codexCommunityReset.checkedAt?.formatted(date: .omitted, time: .shortened) ?? "--")\(store.codexCommunityReset.isStale ? " · 缓存" : "")")
+                    Text("上游：\(store.codexCommunityReset.sourceGeneratedAt?.formatted(date: .omitted, time: .shortened) ?? "未提供") · 首次发现：\(store.communityResetFirstSeenAt?.formatted(date: .omitted, time: .shortened) ?? "--") · 本机获取：\(store.codexCommunityReset.checkedAt?.formatted(date: .omitted, time: .shortened) ?? "--")\(store.codexCommunityReset.isStale ? " · 缓存" : "")")
                         .font(.system(size: 7.5)).foregroundStyle(.tertiary)
                     Text("来自 Codex Runway 公共状态源，不代表 OpenAI 官方承诺；没有明确计划时不会推算倒计时。")
                         .font(.system(size: 8)).foregroundStyle(.secondary)
@@ -964,7 +977,8 @@ private struct ExpandedPanel: View {
                             Button("保存全部变更") { store.saveCredentialVault() }.controlSize(.mini)
                             Button("锁定") { store.lockCredentialVault() }.controlSize(.mini)
                         } else {
-                            Button("解锁凭据") { store.unlockCredentialVault() }.buttonStyle(.borderedProminent).controlSize(.mini)
+                            Button(store.isUnlockingCredentialVault ? "正在解锁…" : "解锁凭据") { store.unlockCredentialVault() }
+                                .buttonStyle(.borderedProminent).controlSize(.mini).disabled(store.isUnlockingCredentialVault)
                         }
                         Menu {
                             Button("尝试导入可静默读取的旧凭据") { store.importReadableLegacyCredentials() }
@@ -973,7 +987,12 @@ private struct ExpandedPanel: View {
                         } label: { Image(systemName: "ellipsis.circle") }.menuStyle(.borderlessButton).fixedSize()
                     }
                     Text(store.credentialVaultStatus).font(.system(size: 8.5)).foregroundStyle(.secondary)
-                    Text("只在你主动解锁时访问一次 macOS Keychain。Clash、飞书和 API 连接器在本次运行共用内存凭据；退出 PulseDock 后自动清空。")
+                    Picker("首次解锁方式", selection: $store.useSystemVaultAuthentication) {
+                        Text("Touch ID 新保险库（不读取旧登录钥匙串）").tag(true)
+                        Text("仅登录钥匙串密码").tag(false)
+                    }
+                    .pickerStyle(.menu).controlSize(.mini).disabled(store.credentialVaultUnlocked)
+                    Text("请在首次点击“解锁凭据”前选择。Touch ID 模式不会读取、迁移或删除旧登录钥匙串，因此不会出现旧钥匙串的密码框；首次成功后请重新填写并保存所需凭据。PulseDock 不读取生物信息。")
                         .font(.system(size: 8)).foregroundStyle(.tertiary)
                 }
             }
@@ -1066,7 +1085,7 @@ private struct ExpandedPanel: View {
                             ForEach(WeatherLocationMode.allCases, id: \.self) { mode in Text(mode.label).tag(mode) }
                         }.pickerStyle(.segmented).controlSize(.small)
                         if store.weatherLocationMode == .automatic {
-                            Button("立即检查") { store.requestAutomaticWeatherLocation(force: true) }
+                            Button("立即检查") { store.requestAutomaticWeatherLocation(force: true, allowAuthorizationPrompt: true) }
                                 .disabled(store.weatherLocationInProgress).controlSize(.mini)
                         }
                     }
@@ -1302,43 +1321,92 @@ private struct ExpandedPanel: View {
                         Button(store.isCheckingClashController ? "发现中…" : "自动发现") { store.autoDiscoverClashController() }
                             .controlSize(.mini).disabled(store.isCheckingClashController)
                     }
-                    Toggle("使用控制器刷新代理提供者", isOn: $store.clashControllerEnabled).toggleStyle(.switch).controlSize(.mini)
+                    Toggle("观察本机控制器用量", isOn: $store.clashControllerEnabled).toggleStyle(.switch).controlSize(.mini)
                     if store.clashControllerEnabled {
                         FocusableTextField(text: $store.clashControllerURL, placeholder: "自动发现或手动填入 127.0.0.1:端口", onSubmit: store.inspectClashController).frame(height: 24)
                         SecureField(store.credentialVaultUnlocked ? "控制器 Secret（统一保险库）" : "先解锁保险库后填写 Secret", text: $store.clashControllerSecret)
                             .textFieldStyle(.roundedBorder).disabled(!store.credentialVaultUnlocked)
                         HStack {
                             Button("验证连接") { store.inspectClashController() }.controlSize(.mini).disabled(store.isCheckingClashController)
-                            Button("同步并重读") { store.refreshClashQuota() }.controlSize(.mini).disabled(store.isRefreshingClash || store.isCheckingClashController)
+                            Button("立即同步机场并重读") { store.synchronizeClashAndRefresh() }.controlSize(.mini).disabled(store.isRefreshingClash || store.isCheckingClashController)
                             Spacer()
                             Text(store.clashCredentialStatus).font(.system(size: 8)).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Toggle("自动更新 Clash 订阅配置", isOn: $store.clashAutomaticProviderSyncEnabled)
+                            .toggleStyle(.switch).controlSize(.mini).disabled(!store.credentialVaultUnlocked)
+                        if store.clashAutomaticProviderSyncEnabled {
+                            HStack {
+                                Stepper("每 \(store.clashAutomaticProviderSyncIntervalMinutes) 分钟", value: $store.clashAutomaticProviderSyncIntervalMinutes, in: 15...240, step: 15)
+                                Spacer()
+                                Text(store.clashAutomaticProviderSyncStatus).lineLimit(1)
+                            }
+                            .font(.system(size: 8)).foregroundStyle(.secondary).controlSize(.mini)
                         }
                     }
                     Text(store.clashSyncEvidence)
                         .font(.system(size: 8.5)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
+                    Text("开启“自动更新 Clash 订阅配置”后，PulseDock 会按所选间隔调用已验证的本机 Mihomo 控制器刷新 provider，再重读额度；未开启时自动检测和“立即重读”只读取本机文件与控制器 GET。")
+                        .font(.system(size: 8)).foregroundStyle(.tertiary)
                 }
             }
             Card {
                 VStack(alignment: .leading, spacing: 9) {
                     HStack {
-                        Label("飞书告警", systemImage: "bell.badge").font(.system(size: 12, weight: .bold))
+                        Label("飞书社区额度预警", systemImage: "bell.badge").font(.system(size: 12, weight: .bold))
                         Spacer(); Toggle("启用", isOn: $store.feishuAlertsEnabled).labelsHidden().toggleStyle(.switch).controlSize(.mini)
                     }
                     SecureField(store.credentialVaultUnlocked ? "飞书群机器人 Webhook" : "解锁保险库后可填写 Webhook", text: $store.feishuWebhook)
                         .textFieldStyle(.roundedBorder).disabled(!store.credentialVaultUnlocked)
+                        .onChange(of: store.feishuWebhook) { _, _ in store.noteFeishuCredentialsEdited() }
                     SecureField(store.credentialVaultUnlocked ? "签名密钥（可选）" : "解锁保险库后可填写签名密钥", text: $store.feishuSigningSecret)
                         .textFieldStyle(.roundedBorder).disabled(!store.credentialVaultUnlocked)
+                        .onChange(of: store.feishuSigningSecret) { _, _ in store.noteFeishuCredentialsEdited() }
                     HStack {
-                        Stepper("同类告警冷却 \(store.alertCooldownMinutes) 分钟", value: $store.alertCooldownMinutes, in: 5...240, step: 5)
                         Spacer(); Text(store.feishuTestStatus).foregroundStyle(.secondary).lineLimit(1)
                         Button("保存") { store.saveCredentialVault() }.disabled(!store.credentialVaultUnlocked || store.feishuWebhook.isEmpty)
                         Button("发送测试") { store.testFeishuAlert() }.disabled(store.feishuWebhook.isEmpty || !store.credentialVaultUnlocked)
                     }.controlSize(.mini).font(.system(size: 8.5))
                     Text(store.feishuCredentialStatus).font(.system(size: 8.5)).foregroundStyle(.secondary)
-                    Text("填写后点击设置页顶部“保存全部变更”。仅发送异常首次触发与恢复；凭据不进入事件账本、配置导出或诊断报告。")
+                    Text("仅用于“社区额度重置预警”，不再发送设备、SSH、网络、温度或一般额度事件。填写后保存并发送测试；凭据不进入事件账本、配置导出或诊断报告。")
                         .font(.system(size: 8.5)).foregroundStyle(.secondary)
+                }
+            }
+            Card {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Label("社区额度重置预警", systemImage: "bell.and.waves.left.and.right").font(.system(size: 12, weight: .bold))
+                        Spacer()
+                        Toggle("启用", isOn: $store.communityResetAlertsEnabled).labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                    }
+                    Text("只对可信、明确且仍在未来的第三方计划提醒；不代表 OpenAI 官方承诺。")
+                        .font(.system(size: 8.5)).foregroundStyle(.secondary)
+                    if store.communityResetAlertsEnabled {
+                        Toggle("本机通知", isOn: $store.communityResetLocalNotificationsEnabled)
+                            .toggleStyle(.switch).controlSize(.mini).font(.system(size: 9))
+                        HStack {
+                            Stepper("确认度 ≥ \(store.communityResetMinimumConfidencePercent)%", value: $store.communityResetMinimumConfidencePercent, in: 50...100, step: 5)
+                            Spacer()
+                            Stepper("未来 \(store.communityResetFutureWindowHours) 小时", value: $store.communityResetFutureWindowHours, in: 1...24)
+                        }.controlSize(.mini).font(.system(size: 8.5))
+                        HStack(spacing: 10) {
+                            Toggle("首次发现", isOn: $store.communityResetFirstAlertEnabled)
+                            Toggle("提前 60 分钟", isOn: $store.communityReset60MinuteAlertEnabled)
+                            Toggle("提前 30 分钟", isOn: $store.communityReset30MinuteAlertEnabled)
+                            Toggle("完成确认", isOn: $store.communityResetCompletionAlertEnabled)
+                        }.toggleStyle(.checkbox).font(.system(size: 8.5))
+                    }
+                    Text("上游检查：\(store.codexCommunityReset.checkedAt?.formatted(date: .numeric, time: .shortened) ?? "--") · 首次发现：\(store.communityResetFirstSeenAt?.formatted(date: .numeric, time: .shortened) ?? "--")")
+                        .font(.system(size: 8)).foregroundStyle(.secondary)
+                    HStack {
+                        Text(store.communityResetLastDeliveryStatus).font(.system(size: 8)).foregroundStyle(.secondary).lineLimit(1)
+                        Spacer()
+                        Button("发送测试") { store.testCommunityResetAlert() }.controlSize(.mini)
+                        Button("重置去重记录", role: .destructive) { store.resetCommunityResetAlertHistory() }.controlSize(.mini)
+                    }
+                    Text("飞书仅使用上方已保存、当前凭据且本次运行测试成功的机器人；改动凭据或锁定保险库后需重新测试。不支持个人微信自动化。")
+                        .font(.system(size: 8)).foregroundStyle(.tertiary)
                 }
             }
             Card {
@@ -1809,7 +1877,7 @@ private struct AmbientSoundPanel: View {
                     ForEach(visible) { mediaButton($0) }
                 }
             }
-            MediaPager(currentPage: ambientPage, canGoForward: start + 6 < all.count) { ambientPage = max(0, min($0, max(0, (all.count - 1) / 6))) }
+            MediaPager(currentPage: ambientPage, canGoForward: start + 6 < all.count, totalPages: max(1, (all.count + 5) / 6)) { ambientPage = max(0, min($0, max(0, (all.count - 1) / 6))) }
             Text("共 \(all.count) 个经许可复核的环境音 · 每页 6 个 · 点击后才连接音频")
                 .font(.system(size: 7.5)).foregroundStyle(.tertiary)
         }
@@ -1942,14 +2010,23 @@ private struct AmbientSoundPanel: View {
 private struct MediaPager: View {
     let currentPage: Int
     let canGoForward: Bool
+    /// Local catalogues know their exact page count; remote cursor APIs do not.
+    /// Keeping this optional prevents an imagined terminal page in fixed lists.
+    var totalPages: Int? = nil
     let go: (Int) -> Void
     @State private var showJump = false
     @State private var pageText = ""
 
     private var nearbyPages: [Int] {
         let lower = max(0, currentPage - 2)
-        let upper = currentPage + (canGoForward ? 2 : 0)
+        let speculativeUpper = currentPage + (canGoForward ? 2 : 0)
+        let upper = totalPages.map { min(speculativeUpper, max(0, $0 - 1)) } ?? speculativeUpper
         return Array(lower...max(lower, upper))
+    }
+
+    private var canAdvance: Bool {
+        if let totalPages { return currentPage < max(0, totalPages - 1) }
+        return canGoForward
     }
 
     var body: some View {
@@ -1964,7 +2041,7 @@ private struct MediaPager: View {
                     .buttonStyle(.bordered)
                     .tint(page == currentPage ? .blue : .secondary)
                     .controlSize(.mini)
-                    .disabled(page > currentPage && !canGoForward)
+                    .disabled(page > currentPage && !canAdvance)
             }
             Button { pageText = String(currentPage + 1); showJump = true } label: {
                 Image(systemName: "number.square")
@@ -1979,15 +2056,16 @@ private struct MediaPager: View {
             }
             Spacer(minLength: 4)
             Button { go(currentPage + 1) } label: { Image(systemName: "chevron.right") }
-                .disabled(!canGoForward).help("下一页")
-            Button { go(currentPage + 2) } label: { Image(systemName: "forward.end.fill") }
-                .disabled(!canGoForward).help("向后两页")
+                .disabled(!canAdvance).help("下一页")
+            Button { go(totalPages.map { min(currentPage + 2, max(0, $0 - 1)) } ?? currentPage + 2) } label: { Image(systemName: "forward.end.fill") }
+                .disabled(!canAdvance).help("向后两页")
         }.controlSize(.mini)
     }
 
     private func jump() {
         guard let page = Int(pageText.trimmingCharacters(in: .whitespacesAndNewlines)), page > 0 else { return }
-        go(page - 1)
+        let target = totalPages.map { min(page - 1, max(0, $0 - 1)) } ?? page - 1
+        go(target)
         showJump = false
     }
 }

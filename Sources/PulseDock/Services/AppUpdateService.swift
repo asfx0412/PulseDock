@@ -12,7 +12,7 @@ enum AppUpdateConfiguration {
     // add its private value to GitHub Actions secrets, then paste its public value
     // here. Never commit the private value.
     static let publicKeyBase64 = "SsvXTiZd9Jfbx30iLpaaGF3eOeGN3HqgN7R4Sbrj7pA="
-    static let lastAutomaticCheckKey = "PulseDock.update.lastAutomaticCheck"
+    static let lastSuccessfulAutomaticCheckKey = "PulseDock.update.lastSuccessfulAutomaticCheck"
     /// A small signed JSON manifest is fetched at this cadence while the app
     /// runs. No archive download happens until the user explicitly updates.
     static let automaticCheckInterval: TimeInterval = 2 * 60 * 60
@@ -200,15 +200,26 @@ actor AppUpdateService {
 final class AppUpdateController {
     private let service = AppUpdateService()
     private var isChecking = false
+    /// This process-local flag deliberately does not survive relaunch.  A
+    /// freshly launched older build must be able to discover a newly released
+    /// build even when another process checked less than two hours ago.
+    private var completedStartupCheck = false
+    private var automaticFailureCount = 0
+    private var hasAutomaticFailure = false
+    private var automaticRetryTask: DispatchWorkItem?
 
     func automaticallyCheckForUpdate() {
-        let last = UserDefaults.standard.object(forKey: AppUpdateConfiguration.lastAutomaticCheckKey) as? Date ?? .distantPast
-        guard Date().timeIntervalSince(last) >= AppUpdateConfiguration.automaticCheckInterval else { return }
-        UserDefaults.standard.set(Date(), forKey: AppUpdateConfiguration.lastAutomaticCheckKey)
-        checkForUpdate(userInitiated: false)
+        if !completedStartupCheck {
+            completedStartupCheck = true
+            checkForUpdate(userInitiated: false, recordAutomaticSuccess: true)
+            return
+        }
+        let last = UserDefaults.standard.object(forKey: AppUpdateConfiguration.lastSuccessfulAutomaticCheckKey) as? Date ?? .distantPast
+        guard hasAutomaticFailure || Date().timeIntervalSince(last) >= AppUpdateConfiguration.automaticCheckInterval else { return }
+        checkForUpdate(userInitiated: false, recordAutomaticSuccess: true)
     }
 
-    func checkForUpdate(userInitiated: Bool) {
+    func checkForUpdate(userInitiated: Bool, recordAutomaticSuccess: Bool = false) {
         guard !isChecking else { return }
         isChecking = true
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
@@ -216,14 +227,39 @@ final class AppUpdateController {
             defer { self?.isChecking = false }
             do {
                 guard let update = try await self?.service.checkForUpdate(currentVersion: version) else {
+                    if recordAutomaticSuccess { self?.recordAutomaticSuccess() }
                     if userInitiated { self?.show(title: "PulseDock 已是最新版本", message: "当前版本 v\(version)。") }
                     return
                 }
+                if recordAutomaticSuccess { self?.recordAutomaticSuccess() }
                 self?.offer(update)
             } catch {
+                if recordAutomaticSuccess { self?.scheduleAutomaticRetry() }
                 if userInitiated { self?.show(title: "检查更新失败", message: error.localizedDescription) }
             }
         }
+    }
+
+    private func recordAutomaticSuccess() {
+        automaticRetryTask?.cancel()
+        automaticRetryTask = nil
+        automaticFailureCount = 0
+        hasAutomaticFailure = false
+        UserDefaults.standard.set(Date(), forKey: AppUpdateConfiguration.lastSuccessfulAutomaticCheckKey)
+    }
+
+    /// Failed background checks stay silent, but get three bounded retries.
+    /// The normal two-hour cadence resumes after that, so a broken network
+    /// never becomes a high-frequency wakeup loop.
+    private func scheduleAutomaticRetry() {
+        hasAutomaticFailure = true
+        automaticFailureCount += 1
+        let delays: [TimeInterval] = [60, 300, 1_800]
+        guard automaticFailureCount <= delays.count else { return }
+        automaticRetryTask?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.automaticallyCheckForUpdate() }
+        automaticRetryTask = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delays[automaticFailureCount - 1], execute: work)
     }
 
     private func offer(_ update: AppUpdateManifest) {
