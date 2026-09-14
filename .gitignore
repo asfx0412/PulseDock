@@ -23,3 +23,16 @@ outputs/*.zip
 *.mobileprovision
 *.secrets
 *.credentials
+
+# Internal planning, release operations, and verification records.
+# These files remain available in the local workspace but must never be
+# committed to the public repository.
+BACKLOG.md
+DEVELOPMENT_HISTORY.md
+DEVELOPMENT_WORKFLOW.md
+PRODUCT_SPEC.md
+RELEASE_CHECKLIST.md
+TESTING.md
+docs/AUTOMATIC_UPDATES.md
+docs/LOCAL_RELEASE_PUBLISH.md
+outputs/*测试报告.md

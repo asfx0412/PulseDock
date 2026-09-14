@@ -69,6 +69,8 @@ for release_path in "${CHANGED_FILES[@]}"; do
   case "$release_path" in
     .env|.env.*|*.pem|*.key|*.p12|*.mobileprovision|*.secrets|*.credentials)
       print "Refusing potentially sensitive release path: $release_path" >&2; exit 1 ;;
+    BACKLOG.md|DEVELOPMENT_HISTORY.md|DEVELOPMENT_WORKFLOW.md|PRODUCT_SPEC.md|RELEASE_CHECKLIST.md|TESTING.md|docs/AUTOMATIC_UPDATES.md|docs/LOCAL_RELEASE_PUBLISH.md|outputs/*测试报告.md)
+      print "Refusing internal-only release path: $release_path" >&2; exit 1 ;;
   esac
 done
 

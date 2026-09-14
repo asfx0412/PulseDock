@@ -287,12 +287,9 @@ Cursor 卡不依赖 PulseDock API Key，但受 macOS 对 Cursor 本地数据库�
 2. 完全退出；
 3. 备份后再删除 `~/Library/Application Support/PulseDock/` 与 PulseDock 相关 UserDefaults。
 
-## 16. 相关文档
+## 16. 相关信息
 
-- `README.md`：项目概览与构建；
+- `README.md`：项目概览、安装与兼容性；
 - `CHANGELOG.md`：按版本更新日志；
-- `DEVELOPMENT_HISTORY.md`：从第一版到当前的开发历史；
-- `BACKLOG.md`：待开发需求与验收；
-- `TESTING.md` / `RELEASE_CHECKLIST.md`：测试和发布门禁；
 - `SECURITY.md`：凭据、隐私和远程只读边界；
-- `THIRD_PARTY_NOTICES.md`：第三方数据/音频来源与 Codex Runway clean-room 边界。
+- `THIRD_PARTY_NOTICES.md`：第三方数据与音频来源说明。
