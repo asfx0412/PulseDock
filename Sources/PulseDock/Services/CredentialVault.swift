@@ -5,7 +5,10 @@ import Foundation
 /// the current app session.
 struct CredentialVault: Codable, Equatable {
     static let legacyAccount = "credential-vault-v1"
-    static let systemAuthenticatedAccount = "credential-vault-v2"
+    /// v3 uses the macOS file-keychain ACL model. It is deliberately a fresh
+    /// account: neither legacy v1 nor the experimental v2 is read, migrated,
+    /// deleted, or used as a fallback from Touch ID mode.
+    static let systemAuthenticatedAccount = "credential-vault-v3"
     var schemaVersion = 1
     var values: [String: String] = [:]
 
@@ -35,18 +38,17 @@ enum CredentialVaultService {
         guard preferSystemAuthentication else {
             return decode(SecretStore.readInteractive(CredentialVault.legacyAccount), origin: .legacyPassword)
         }
-        // Direct Touch ID mode intentionally never falls back to v1. An old
+        // Direct Touch ID mode intentionally never falls back to v1/v2. An old
         // ordinary Login Keychain item can only be read with its old password
         // ACL; touching it would violate the user's “no first password” choice.
         // Keep it intact for an optional future recovery flow, but create a
-        // clean v2 vault after successful system authentication instead.
+        // clean v3 vault after successful system authentication instead.
         switch decode(await SecretStore.readSystemAuthenticated(CredentialVault.systemAuthenticatedAccount), origin: .systemAuthentication) {
         case .missing:
             let empty = CredentialVault()
-            // The Touch ID check above is the gate. The ad-hoc build cannot
-            // create a Keychain `.userPresence` ACL (-34018), so v2 is kept in
-            // the ordinary local keychain and every app read still enters via
-            // that explicit gate.
+            // The Touch ID check above is the gate. v3 uses a file-keychain
+            // ACL that trusts PulseDock, so no Team entitlement is required
+            // and the subsequent keychain operation is always UI-forbidden.
             switch save(empty, systemAuthenticated: true) {
             case .saved: return .unlocked(empty, .systemAuthentication)
             case .interactionRequired: return .interactionRequired
@@ -96,8 +98,8 @@ enum CredentialVaultService {
     }
 
     static func remove() -> SecretStore.WriteResult {
-        let v2 = SecretStore.removeInteractive(CredentialVault.systemAuthenticatedAccount)
-        guard v2 == .removed else { return v2 }
+        let v3 = SecretStore.removeInteractive(CredentialVault.systemAuthenticatedAccount)
+        guard v3 == .removed else { return v3 }
         return SecretStore.removeInteractive(CredentialVault.legacyAccount)
     }
 }

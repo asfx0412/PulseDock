@@ -195,6 +195,27 @@ compile_and_run keychain_policy \
   Sources/PulseDock/Services/SecretStore.swift \
   Sources/PulseDock/Services/CredentialVault.swift
 
+# v3 is intentionally a new, isolated vault identity. The biometric flow may
+# not inspect/migrate/delete v1 or v2, and Keychain is forbidden from adding a
+# second password sheet after LAContext succeeds.
+VAULT_SOURCE="$(sed -n '/Direct Touch ID mode intentionally/,/private static func decode/p' Sources/PulseDock/Services/CredentialVault.swift)"
+if ! rg -q 'credential-vault-v3' Sources/PulseDock/Services/CredentialVault.swift || \
+   rg -q 'legacyAccount|credential-vault-v2|migrate' <<<"$VAULT_SOURCE"; then
+  echo "Touch ID vault must be v3-only and isolated from legacy Keychain items" >&2
+  exit 1
+fi
+SYSTEM_READ_SOURCE="$(sed -n '/static func readSystemAuthenticated/,/private static func authenticate/p' Sources/PulseDock/Services/SecretStore.swift)"
+if ! rg -q 'kSecUseAuthenticationUIFail' <<<"$SYSTEM_READ_SOURCE" || \
+   ! rg -q 'authenticate\(context: context, policy: \.deviceOwnerAuthenticationWithBiometrics\)' <<<"$SYSTEM_READ_SOURCE"; then
+  echo "Touch ID read must prohibit a follow-up Keychain authentication sheet" >&2
+  exit 1
+fi
+SYSTEM_WRITE_SOURCE="$(sed -n '/static func writeSystemAuthenticated/,/@discardableResult/p' Sources/PulseDock/Services/SecretStore.swift)"
+if ! rg -q 'write\(value, account: account\)' <<<"$SYSTEM_WRITE_SOURCE"; then
+  echo "Touch ID v3 writes must use the UI-free ordinary Keychain helper" >&2
+  exit 1
+fi
+
 # Regression guard: background launch and periodic loops must not read Keychain.
 if sed -n '/func start()/,/func stop()/p' Sources/PulseDock/App/MonitorStore.swift | grep -q 'SecretStore.read'; then
   echo "Background start path unexpectedly reads Keychain" >&2
@@ -232,11 +253,6 @@ if ! rg -q 'case \.locationUnknown:' Sources/PulseDock/Services/CurrentLocationS
 fi
 if ! rg -q 'locationServicesEnabled\(\)' Sources/PulseDock/Services/CurrentLocationService.swift || ! rg -q 'authorizationDenied' Sources/PulseDock/Services/CurrentLocationService.swift; then
   echo "Location service and authorization states must remain explicit and non-retrying" >&2
-  exit 1
-fi
-
-if ! grep -q 'interactionNotAllowed = true' Sources/PulseDock/Services/SecretStore.swift; then
-  echo "Keychain wrapper no longer guarantees non-interactive access" >&2
   exit 1
 fi
 

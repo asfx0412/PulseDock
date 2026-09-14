@@ -69,7 +69,7 @@ enum SecretStore {
         }
     }
 
-    /// Reads a v2 vault after an explicit user-initiated system authentication.
+    /// Reads a v3 vault after an explicit user-initiated system authentication.
     /// Touch ID is requested first; password is used only when biometric
     /// authentication is unavailable, not enrolled, or locked out.
     static func readSystemAuthenticated(_ account: String) async -> ReadResult {
@@ -81,10 +81,15 @@ enum SecretStore {
             do { try await authenticate(context: context, policy: .deviceOwnerAuthentication) }
             catch { return .interactionRequired }
         }
+        // Do not give Keychain a second chance to display its own login
+        // password sheet after Touch ID has completed. v3 is a fresh ordinary
+        // local Keychain item; the explicit LAContext gate authorizes access.
+        // A Keychain mismatch becomes a recoverable error, never an
+        // unexpected password prompt.
         var query = baseQuery(account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
-        query[kSecUseAuthenticationContext as String] = context
+        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         switch status {
@@ -115,26 +120,25 @@ enum SecretStore {
     static func write(_ value: String, account: String) -> WriteResult {
         guard !value.isEmpty else { return remove(account) }
 
-        let query = nonInteractiveQuery(account)
-        let attributes: [String: Any] = [kSecValueData as String: Data(value.utf8)]
-        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        switch updateStatus {
-        case errSecSuccess:
-            return .saved
-        case errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled:
-            return .interactionRequired
-        case errSecItemNotFound:
-            var item = nonInteractiveQuery(account)
-            item[kSecValueData as String] = Data(value.utf8)
-            item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            let addStatus = SecItemAdd(item as CFDictionary, nil)
-            switch addStatus {
+        // On current macOS, SecItemUpdate of a non-existent generic-password
+        // item may return errSecParam instead of errSecItemNotFound. Add first
+        // and update only on duplicate, so first-time vault creation is not
+        // dependent on that platform-specific failure mode.
+        var item = baseQuery(account)
+        item[kSecValueData as String] = Data(value.utf8)
+        let addStatus = SecItemAdd(item as CFDictionary, nil)
+        switch addStatus {
+        case errSecSuccess: return .saved
+        case errSecDuplicateItem:
+            let attributes: [String: Any] = [kSecValueData as String: Data(value.utf8)]
+            let updateStatus = SecItemUpdate(baseQuery(account) as CFDictionary, attributes as CFDictionary)
+            switch updateStatus {
             case errSecSuccess: return .saved
             case errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled: return .interactionRequired
-            default: return .failed(addStatus)
+            default: return .failed(updateStatus)
             }
-        default:
-            return .failed(updateStatus)
+        case errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled: return .interactionRequired
+        default: return .failed(addStatus)
         }
     }
 
@@ -149,7 +153,6 @@ enum SecretStore {
         case errSecItemNotFound:
             var item = baseQuery(account)
             item[kSecValueData as String] = Data(value.utf8)
-            item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             let addStatus = SecItemAdd(item as CFDictionary, nil)
             switch addStatus {
             case errSecSuccess: return .saved
@@ -161,18 +164,14 @@ enum SecretStore {
         }
     }
 
-    /// Writes the v2 item after the caller has already completed the explicit
+    /// Writes the v3 item after the caller has already completed the explicit
     /// Touch ID gate in `readSystemAuthenticated`.
     ///
-    /// `SecAccessControl(.userPresence)` creates a Data Protection Keychain
-    /// item on macOS. That requires an application-identifier/keychain-access-
-    /// group entitlement issued by an Apple signing team. PulseDock's local
-    /// ad-hoc builds intentionally have no team entitlement, and Security
-    /// rejects that add with errSecMissingEntitlement (-34018). Keep the
-    /// biometric gate in `LAContext`, then store the v2 payload in the normal
-    /// local Login Keychain. All PulseDock access paths require that gate and
-    /// background paths remain non-interactive, so this avoids a password sheet
-    /// without silently reading a secret in a background refresh.
+    /// Data-protection `.userPresence` requires an entitlement that ad-hoc
+    /// releases do not have. Legacy `SecAccess` ACLs also cannot be added to
+    /// the modern Data Protection Keychain on current macOS. v3 therefore
+    /// uses a fresh ordinary local item, with Touch ID enforced by the explicit
+    /// `LAContext` gate before this method, and every Keychain operation UI-free.
     static func writeSystemAuthenticated(_ value: String, account: String) -> WriteResult {
         write(value, account: account)
     }
@@ -208,17 +207,11 @@ enum SecretStore {
 
     private static func nonInteractiveQuery(_ account: String) -> [String: Any] {
         var query = baseQuery(account)
-        // LAContext alone is not sufficient for every legacy ACL. This flag is
-        // the Security.framework-level guarantee that a background lookup fails
-        // instead of adding another password sheet to the system queue.
+        // This is the Security.framework-level guarantee that a background
+        // lookup fails instead of adding another password sheet to the system
+        // queue. Do not attach LAContext: generic-password entries reject it
+        // with errSecParam; Touch ID is evaluated before the v3 read.
         query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
-        query[kSecUseAuthenticationContext as String] = nonInteractiveContext()
         return query
-    }
-
-    private static func nonInteractiveContext() -> LAContext {
-        let context = LAContext()
-        context.interactionNotAllowed = true
-        return context
     }
 }

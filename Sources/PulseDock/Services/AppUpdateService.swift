@@ -44,6 +44,35 @@ struct AppUpdateManifest: Codable, Sendable {
     }
 }
 
+/// Presentation-only projection of signed release notes. The original notes
+/// remain signed and available from GitHub; this deliberately never renders
+/// arbitrary Markdown in the small update prompt.
+struct UpdatePresentation: Equatable {
+    let title: String
+    let summary: String
+    let hasMore: Bool
+
+    init(manifest: AppUpdateManifest) {
+        title = "发现 PulseDock v\(manifest.version)"
+        let lines = manifest.notes
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .map { $0.replacingOccurrences(of: "^-+\\s*", with: "", options: .regularExpression) }
+            .map { $0.replacingOccurrences(of: "^#+\\s*", with: "", options: .regularExpression) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("```") }
+        let userLines = lines.filter { !$0.localizedCaseInsensitiveContains("sha-256") && !$0.localizedCaseInsensitiveContains("keychain") && !$0.localizedCaseInsensitiveContains("mihomo") && !$0.localizedCaseInsensitiveContains("签名") && !$0.localizedCaseInsensitiveContains("构建") }
+        let selected = Array((userLines.isEmpty ? lines : userLines).prefix(3)).map(Self.truncate)
+        summary = selected.isEmpty ? "新版本已可用，包含稳定性改进与安全更新。" : selected.map { "• \($0)" }.joined(separator: "\n")
+        hasMore = lines.count > selected.count
+    }
+
+    private static func truncate(_ value: String) -> String {
+        let limit = 88
+        guard value.count > limit else { return value }
+        return String(value.prefix(limit - 1)) + "…"
+    }
+}
+
 enum AppUpdateError: LocalizedError {
     case notConfigured
     case invalidManifest
@@ -263,12 +292,19 @@ final class AppUpdateController {
     }
 
     private func offer(_ update: AppUpdateManifest) {
+        let presentation = UpdatePresentation(manifest: update)
         let alert = NSAlert()
-        alert.messageText = "发现 PulseDock v\(update.version)"
-        alert.informativeText = update.notes.isEmpty ? "新版本已可用。" : update.notes
+        alert.messageText = presentation.title
+        alert.informativeText = "\(presentation.summary)\n\n更新包将在确认后下载、验签并安全替换当前 App。"
         alert.addButton(withTitle: "下载并更新")
         alert.addButton(withTitle: "稍后")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if presentation.hasMore { alert.addButton(withTitle: "查看完整更新") }
+        let response = alert.runModal()
+        if presentation.hasMore && response == .alertThirdButtonReturn {
+            if let releaseURL = releasePageURL(for: update) { NSWorkspace.shared.open(releaseURL) }
+            return
+        }
+        guard response == .alertFirstButtonReturn else { return }
         Task {
             do {
                 let stagedApp = try await service.downloadAndStage(update)
@@ -281,6 +317,11 @@ final class AppUpdateController {
                 NSApp.terminate(nil)
             } catch { show(title: "更新失败", message: error.localizedDescription) }
         }
+    }
+
+    private func releasePageURL(for update: AppUpdateManifest) -> URL? {
+        guard update.url.host == "github.com", update.url.path.hasPrefix("/asfx0412/PulseDock/releases/download/v\(update.version)/") else { return nil }
+        return URL(string: "https://github.com/asfx0412/PulseDock/releases/tag/v\(update.version)")
     }
 
     private func launchInstaller(stagedApp: URL) throws {

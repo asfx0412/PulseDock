@@ -1177,7 +1177,7 @@ final class MonitorStore: ObservableObject {
                 self.credentialVaultUnlocked = true
                 self.quotaAccessGeneration += 1
                 self.credentialVaultStatus = switch origin {
-                case .systemAuthentication: "已通过 Touch ID 解锁；本次运行只读取一次统一保险库"
+                case .systemAuthentication: "已通过 Touch ID 解锁；不会再请求登录钥匙串密码"
                 case .legacyPassword: "已用登录钥匙串密码解锁"
                 }
                 self.refreshClashQuota()
@@ -1196,7 +1196,7 @@ final class MonitorStore: ObservableObject {
                 self.refreshAPIConnectors()
             case .interactionRequired:
                 self.credentialVaultStatus = self.useSystemVaultAuthentication
-                    ? "Touch ID/系统验证未完成；未读取旧登录钥匙串，也没有请求密码"
+                    ? "Touch ID 未完成，或新保险库未授权当前 App；未读取旧登录钥匙串，也没有请求密码"
                     : "登录钥匙串密码未获允许；请重试"
             case let .failed(status):
                 self.credentialVaultStatus = "凭据保险库读取失败（OSStatus \(status)）"
@@ -1257,7 +1257,7 @@ final class MonitorStore: ObservableObject {
         for (id, key) in apiConnectorKeyCache { credentialVault[apiCredentialKey(id)] = key }
         switch CredentialVaultService.saveAfterUnlock(credentialVault, systemAuthenticated: useSystemVaultAuthentication) {
         case .saved:
-            credentialVaultStatus = useSystemVaultAuthentication ? "已保存到 Touch ID 保险库；旧登录钥匙串未被读取或修改" : "已保存全部变更；本次运行不会再次请求钥匙串"
+            credentialVaultStatus = useSystemVaultAuthentication ? "已保存到 Touch ID v3 保险库；旧登录钥匙串未被读取或修改" : "已保存全部变更；本次运行不会再次请求钥匙串"
             clashCredentialStatus = "使用统一凭据保险库"
             feishuCredentialStatus = "使用统一凭据保险库"
         case .removed:
