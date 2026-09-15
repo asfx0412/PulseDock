@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://github.com/asfx0412/PulseDock/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/asfx0412/PulseDock?display_name=tag&amp;sort=semver"></a>
   <a href="https://github.com/asfx0412/PulseDock/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/asfx0412/PulseDock?style=flat&amp;label=stars&amp;color=ffca28"></a>
-  <img height="20" alt="Repository visits" src="https://api.visitorbadge.io/api/VisitorHit?user=asfx0412&amp;repo=PulseDock&amp;label=views&amp;labelColor=555555&amp;countColor=0ea5e9">
+  <a href="https://hits.sh/github.com/asfx0412/PulseDock/"><img alt="Repository views" src="https://hits.sh/github.com/asfx0412/PulseDock.svg?label=views&amp;color=0ea5e9&amp;labelColor=555555"></a>
   <img alt="Platform" src="https://img.shields.io/badge/macOS-26%2B-black">
   <img alt="Architecture" src="https://img.shields.io/badge/Apple%20Silicon-arm64-8a2be2">
   <img alt="Swift" src="https://img.shields.io/badge/Swift-6.2-f05138">
