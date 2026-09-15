@@ -133,7 +133,6 @@ final class MonitorStore: ObservableObject {
     @Published private(set) var credentialVaultUnlocked = false
     @Published private(set) var isUnlockingCredentialVault = false
     @Published private(set) var credentialVaultStatus = "已锁定；本次运行尚未读取任何凭据"
-    @Published var useSystemVaultAuthentication: Bool { didSet { UserDefaults.standard.set(useSystemVaultAuthentication, forKey: PreferenceKey.systemVaultAuthentication) } }
     @Published var pomodoroPhase: PomodoroPhase = .idle
     @Published var pomodoroSecondsRemaining = 25 * 60
     @Published var focusMinutes: Int { didSet { persistProductivitySettings(); resetPomodoroIfIdle() } }
@@ -275,7 +274,6 @@ final class MonitorStore: ObservableObject {
         static let communityReset30MinuteAlertEnabled = "PulseDock.communityReset30MinuteAlertEnabled"
         static let communityResetCompletionAlertEnabled = "PulseDock.communityResetCompletionAlertEnabled"
         static let apiConnectors = "PulseDock.apiConnectors"
-        static let systemVaultAuthentication = "PulseDock.systemVaultAuthentication"
     }
 
     init() {
@@ -325,9 +323,6 @@ final class MonitorStore: ObservableObject {
         communityReset30MinuteAlertEnabled = defaults.bool(forKey: PreferenceKey.communityReset30MinuteAlertEnabled)
         communityResetCompletionAlertEnabled = defaults.object(forKey: PreferenceKey.communityResetCompletionAlertEnabled) as? Bool ?? true
         apiConnectors = Self.sanitizeAPIConfigurations(defaults.data(forKey: PreferenceKey.apiConnectors).flatMap { try? JSONDecoder().decode([APIConnectorConfiguration].self, from: $0) } ?? [])
-        // New installs default to direct biometric authentication. Existing
-        // explicit user choices remain untouched.
-        useSystemVaultAuthentication = defaults.object(forKey: PreferenceKey.systemVaultAuthentication) as? Bool ?? true
         let statsAreToday = defaults.string(forKey: PreferenceKey.statsDate) == today
         completedFocusToday = statsAreToday ? defaults.integer(forKey: PreferenceKey.completed) : 0
         skippedToday = statsAreToday ? defaults.integer(forKey: PreferenceKey.skipped) : 0
@@ -1165,21 +1160,18 @@ final class MonitorStore: ObservableObject {
     func unlockCredentialVault() {
         guard !isUnlockingCredentialVault else { return }
         isUnlockingCredentialVault = true
-        credentialVaultStatus = useSystemVaultAuthentication ? "正在请求系统验证…" : "正在请求登录钥匙串密码…"
+        credentialVaultStatus = "正在请求 Touch ID…"
         Task { [weak self] in
             guard let self else { return }
-            let result = await CredentialVaultService.unlock(preferSystemAuthentication: self.useSystemVaultAuthentication)
+            let result = await CredentialVaultService.unlock()
             self.isUnlockingCredentialVault = false
             switch result {
-            case let .unlocked(vault, origin):
+            case let .unlocked(vault):
                 self.credentialVault = vault
                 self.applyCredentialVault()
                 self.credentialVaultUnlocked = true
                 self.quotaAccessGeneration += 1
-                self.credentialVaultStatus = switch origin {
-                case .systemAuthentication: "已通过 Touch ID 解锁；不会再请求登录钥匙串密码"
-                case .legacyPassword: "已用登录钥匙串密码解锁"
-                }
+                self.credentialVaultStatus = "已通过 Touch ID 解锁；不会读取或请求旧登录钥匙串"
                 self.refreshClashQuota()
                 self.refreshQuota()
                 self.refreshAPIConnectors()
@@ -1188,32 +1180,16 @@ final class MonitorStore: ObservableObject {
                 self.applyCredentialVault()
                 self.credentialVaultUnlocked = true
                 self.quotaAccessGeneration += 1
-                self.credentialVaultStatus = self.useSystemVaultAuthentication
-                    ? "已通过 Touch ID 新建保险库；填写并保存凭据后即可使用"
-                    : "新保险库已解锁；旧版分散凭据不会自动读取"
+                self.credentialVaultStatus = "已通过 Touch ID 解锁本次会话；首次保存凭据时才创建 v4 保险库"
                 self.refreshClashQuota()
                 self.refreshQuota()
                 self.refreshAPIConnectors()
             case .interactionRequired:
-                self.credentialVaultStatus = self.useSystemVaultAuthentication
-                    ? "Touch ID 未完成，或新保险库未授权当前 App；未读取旧登录钥匙串，也没有请求密码"
-                    : "登录钥匙串密码未获允许；请重试"
+                self.credentialVaultStatus = "Touch ID 未通过，或 v4 保险库无法无密码访问；未读取旧登录钥匙串，也没有请求系统密码"
             case let .failed(status):
                 self.credentialVaultStatus = "凭据保险库读取失败（OSStatus \(status)）"
             }
         }
-    }
-
-    /// Explicit compatibility action. All legacy reads are non-interactive, so
-    /// this can never enqueue a series of macOS password dialogs.
-    func importReadableLegacyCredentials() {
-        guard credentialVaultUnlocked else {
-            credentialVaultStatus = "请先解锁统一凭据保险库"
-            return
-        }
-        let migration = migrateLegacyCredentials()
-        applyCredentialVault()
-        credentialVaultStatus = migration.status(defaultText: "没有发现可静默读取的旧版凭据")
     }
 
     func lockCredentialVault() {
@@ -1255,9 +1231,9 @@ final class MonitorStore: ObservableObject {
         credentialVault["feishu-webhook"] = feishuWebhook
         credentialVault["feishu-signing-secret"] = feishuSigningSecret
         for (id, key) in apiConnectorKeyCache { credentialVault[apiCredentialKey(id)] = key }
-        switch CredentialVaultService.saveAfterUnlock(credentialVault, systemAuthenticated: useSystemVaultAuthentication) {
+        switch CredentialVaultService.saveAfterUnlock(credentialVault) {
         case .saved:
-            credentialVaultStatus = useSystemVaultAuthentication ? "已保存到 Touch ID v3 保险库；旧登录钥匙串未被读取或修改" : "已保存全部变更；本次运行不会再次请求钥匙串"
+            credentialVaultStatus = "已保存到 Touch ID v4 保险库；旧登录钥匙串未被读取或修改"
             clashCredentialStatus = "使用统一凭据保险库"
             feishuCredentialStatus = "使用统一凭据保险库"
         case .removed:
@@ -1322,50 +1298,6 @@ final class MonitorStore: ObservableObject {
     }
 
     private func apiCredentialKey(_ id: UUID) -> String { "api-connector-\(id.uuidString)" }
-
-    private struct LegacyMigration {
-        var imported: [String] = []
-        var blocked: [String] = []
-
-        func status(defaultText: String) -> String {
-            if !imported.isEmpty {
-                let blockedText = blocked.isEmpty ? "" : "；另有 \(blocked.count) 项旧凭据需重新填写"
-                return "已恢复旧版凭据：\(imported.joined(separator: "、"))\(blockedText)"
-            }
-            if !blocked.isEmpty { return "已解锁；\(blocked.count) 项旧凭据无法静默迁移，请在对应卡片重新填写一次" }
-            return defaultText
-        }
-    }
-
-    /// 6.4.0 moved several Keychain records into one vault but did not import
-    /// existing records. Migration is deliberately non-interactive: it either
-    /// restores a readable legacy value or asks for a one-time re-entry, never a
-    /// queue of per-connector password sheets.
-    private func migrateLegacyCredentials() -> LegacyMigration {
-        var result = LegacyMigration()
-        var accounts: [(key: String, label: String)] = [
-            ("clash-controller-secret", "Mihomo Secret"),
-            ("feishu-webhook", "飞书 Webhook"),
-            ("feishu-signing-secret", "飞书签名密钥")
-        ]
-        accounts += apiConnectors.filter(\.kind.requiresAPIKey).map { (apiCredentialKey($0.id), $0.name) }
-
-        for item in accounts where credentialVault[item.key].isEmpty {
-            switch SecretStore.read(item.key) {
-            case let .value(value) where !value.isEmpty:
-                credentialVault[item.key] = value
-                result.imported.append(item.label)
-            case .interactionRequired:
-                result.blocked.append(item.label)
-            default:
-                break
-            }
-        }
-        if !result.imported.isEmpty {
-            _ = CredentialVaultService.saveAfterUnlock(credentialVault, systemAuthenticated: useSystemVaultAuthentication)
-        }
-        return result
-    }
 
     func apiKeyDraft(for id: UUID) -> String { apiConnectorKeyCache[id] ?? "" }
 

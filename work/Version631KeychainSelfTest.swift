@@ -1,17 +1,16 @@
 import Foundation
 
 @main
-struct Version631KeychainSelfTest {
+struct Version632KeychainSelfTest {
     static func main() {
         precondition(SecretStore.service == "com.pulsedock.monitor")
         precondition(SecretStore.ReadResult.interactionRequired == .interactionRequired)
         precondition(SecretStore.WriteResult.interactionRequired == .interactionRequired)
         precondition(SecretStore.ReadResult.missing == .missing)
         precondition(SecretStore.WriteResult.removed == .removed)
-        precondition(CredentialVault.legacyAccount == "credential-vault-v1")
-        // v3 is deliberately a separate identity: Touch ID operation must
-        // never touch experimental v2 or an older Login Keychain entry.
-        precondition(CredentialVault.systemAuthenticatedAccount == "credential-vault-v3")
+        // v4 is deliberately a separate identity: Touch ID operation must
+        // never route through any other vault account.
+        precondition(CredentialVault.systemAuthenticatedAccount == "credential-vault-v4")
         let vault = CredentialVault(values: ["one": "1"])
         precondition(vault["one"] == "1")
 
@@ -19,6 +18,6 @@ struct Version631KeychainSelfTest {
         // executable has a different code-signing identity and is not a valid
         // substitute for the real app's Keychain behavior. The release
         // checklist carries the new- and existing-user device verification.
-        print("PulseDock 6.16.1 credential vault identity policy passed")
+        print("PulseDock 6.16.3 credential vault identity policy passed")
     }
 }

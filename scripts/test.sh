@@ -195,24 +195,33 @@ compile_and_run keychain_policy \
   Sources/PulseDock/Services/SecretStore.swift \
   Sources/PulseDock/Services/CredentialVault.swift
 
-# v3 is intentionally a new, isolated vault identity. The biometric flow may
-# not inspect/migrate/delete v1 or v2, and Keychain is forbidden from adding a
-# second password sheet after LAContext succeeds.
-VAULT_SOURCE="$(sed -n '/Direct Touch ID mode intentionally/,/private static func decode/p' Sources/PulseDock/Services/CredentialVault.swift)"
-if ! rg -q 'credential-vault-v3' Sources/PulseDock/Services/CredentialVault.swift || \
-   rg -q 'legacyAccount|credential-vault-v2|migrate' <<<"$VAULT_SOURCE"; then
-  echo "Touch ID vault must be v3-only and isolated from legacy Keychain items" >&2
+# v4 is the only supported vault identity. No legacy account, migration, or
+# password-mode API may remain in the shipping implementation.
+VAULT_SOURCE="$(cat Sources/PulseDock/Services/CredentialVault.swift)"
+if ! rg -q 'credential-vault-v4' <<<"$VAULT_SOURCE" || \
+   rg -q 'legacyAccount|readInteractive|writeInteractive|removeInteractive|preferSystemAuthentication|legacyPassword|credential-vault-v[123]' Sources/PulseDock/Services/CredentialVault.swift Sources/PulseDock/Services/SecretStore.swift; then
+  echo "Touch ID vault must contain only the v4 implementation" >&2
+  exit 1
+fi
+if rg -q 'save\(empty, systemAuthenticated: true\)' <<<"$VAULT_SOURCE"; then
+  echo "First Touch ID unlock must not write an empty Keychain vault" >&2
   exit 1
 fi
 SYSTEM_READ_SOURCE="$(sed -n '/static func readSystemAuthenticated/,/private static func authenticate/p' Sources/PulseDock/Services/SecretStore.swift)"
-if ! rg -q 'kSecUseAuthenticationUIFail' <<<"$SYSTEM_READ_SOURCE" || \
+NONINTERACTIVE_QUERY_SOURCE="$(sed -n '/private static func nonInteractiveQuery/,/^    }/p' Sources/PulseDock/Services/SecretStore.swift)"
+if ! rg -q 'nonInteractiveQuery\(account\)' <<<"$SYSTEM_READ_SOURCE" || \
+   ! rg -q 'kSecUseAuthenticationUIFail' <<<"$NONINTERACTIVE_QUERY_SOURCE" || \
    ! rg -q 'authenticate\(context: context, policy: \.deviceOwnerAuthenticationWithBiometrics\)' <<<"$SYSTEM_READ_SOURCE"; then
   echo "Touch ID read must prohibit a follow-up Keychain authentication sheet" >&2
   exit 1
 fi
 SYSTEM_WRITE_SOURCE="$(sed -n '/static func writeSystemAuthenticated/,/@discardableResult/p' Sources/PulseDock/Services/SecretStore.swift)"
-if ! rg -q 'write\(value, account: account\)' <<<"$SYSTEM_WRITE_SOURCE"; then
-  echo "Touch ID v3 writes must use the UI-free ordinary Keychain helper" >&2
+if ! rg -q 'nonInteractiveQuery\(account\)' <<<"$SYSTEM_WRITE_SOURCE"; then
+  echo "Touch ID v4 writes must prohibit Keychain authentication UI" >&2
+  exit 1
+fi
+if rg -q 'deviceOwnerAuthentication\)' <<<"$SYSTEM_READ_SOURCE"; then
+  echo "Touch ID mode must never fall back to device-password authentication" >&2
   exit 1
 fi
 
@@ -266,8 +275,8 @@ if grep -E '@Published var (clashControllerSecret|feishuWebhook|feishuSigningSec
   exit 1
 fi
 
-if sed -n '/func unlockCredentialVault()/,/func importReadableLegacyCredentials()/p' Sources/PulseDock/App/MonitorStore.swift | grep -q 'migrateLegacyCredentials()'; then
-  echo "Vault unlock must not enumerate legacy Keychain records" >&2
+if rg -q 'importReadableLegacyCredentials|migrateLegacyCredentials|LegacyMigration|useSystemVaultAuthentication' Sources/PulseDock/App/MonitorStore.swift Sources/PulseDock/Views/PanelViews.swift; then
+  echo "Vault UI and unlock path must not expose legacy Keychain handling" >&2
   exit 1
 fi
 

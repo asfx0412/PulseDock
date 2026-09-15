@@ -4,11 +4,9 @@ import Foundation
 /// intentionally loaded only after a user action and is held only in memory for
 /// the current app session.
 struct CredentialVault: Codable, Equatable {
-    static let legacyAccount = "credential-vault-v1"
-    /// v3 uses the macOS file-keychain ACL model. It is deliberately a fresh
-    /// account: neither legacy v1 nor the experimental v2 is read, migrated,
-    /// deleted, or used as a fallback from Touch ID mode.
-    static let systemAuthenticatedAccount = "credential-vault-v3"
+    /// The only supported vault identity. Historical v1/v2/v3 Keychain data is
+    /// deliberately outside this implementation and is never accessed.
+    static let systemAuthenticatedAccount = "credential-vault-v4"
     var schemaVersion = 1
     var values: [String: String] = [:]
 
@@ -22,84 +20,47 @@ struct CredentialVault: Codable, Equatable {
 }
 
 enum CredentialVaultService {
-    enum UnlockOrigin: Equatable {
-        case systemAuthentication
-        case legacyPassword
-    }
-
     enum UnlockResult: Equatable {
-        case unlocked(CredentialVault, UnlockOrigin)
+        case unlocked(CredentialVault)
         case missing
         case interactionRequired
         case failed(OSStatus)
     }
 
-    static func unlock(preferSystemAuthentication: Bool) async -> UnlockResult {
-        guard preferSystemAuthentication else {
-            return decode(SecretStore.readInteractive(CredentialVault.legacyAccount), origin: .legacyPassword)
-        }
-        // Direct Touch ID mode intentionally never falls back to v1/v2. An old
-        // ordinary Login Keychain item can only be read with its old password
-        // ACL; touching it would violate the user's “no first password” choice.
-        // Keep it intact for an optional future recovery flow, but create a
-        // clean v3 vault after successful system authentication instead.
-        switch decode(await SecretStore.readSystemAuthenticated(CredentialVault.systemAuthenticatedAccount), origin: .systemAuthentication) {
-        case .missing:
-            let empty = CredentialVault()
-            // The Touch ID check above is the gate. v3 uses a file-keychain
-            // ACL that trusts PulseDock, so no Team entitlement is required
-            // and the subsequent keychain operation is always UI-forbidden.
-            switch save(empty, systemAuthenticated: true) {
-            case .saved: return .unlocked(empty, .systemAuthentication)
-            case .interactionRequired: return .interactionRequired
-            case let .failed(status): return .failed(status)
-            case .removed: return .missing
-            }
+    static func unlock() async -> UnlockResult {
+        // The Touch ID flow has one identity and one policy. It never reads,
+        // migrates, deletes, or falls back to the historical v1/v2/v3 items.
+        // A first unlock also never writes an empty Keychain record: creation
+        // happens only after the user explicitly saves real credentials.
+        switch decode(await SecretStore.readSystemAuthenticated(CredentialVault.systemAuthenticatedAccount)) {
+        case .missing: return .missing
         case let result:
             return result
         }
     }
 
-    private static func decode(_ result: SecretStore.ReadResult, origin: UnlockOrigin) -> UnlockResult {
+    private static func decode(_ result: SecretStore.ReadResult) -> UnlockResult {
         switch result {
         case let .value(raw):
             guard let data = raw.data(using: .utf8),
-                  let vault = try? JSONDecoder().decode(CredentialVault.self, from: data),
+            let vault = try? JSONDecoder().decode(CredentialVault.self, from: data),
                   vault.schemaVersion == 1 else { return .failed(errSecDecode) }
-            return .unlocked(vault, origin)
+            return .unlocked(vault)
         case .missing: return .missing
         case .interactionRequired: return .interactionRequired
         case let .failed(status): return .failed(status)
         }
     }
 
-    static func save(_ vault: CredentialVault, systemAuthenticated: Bool) -> SecretStore.WriteResult {
-        guard let data = try? JSONEncoder().encode(vault),
-              let text = String(data: data, encoding: .utf8) else { return .failed(errSecParam) }
-        return systemAuthenticated
-            ? SecretStore.writeSystemAuthenticated(text, account: CredentialVault.systemAuthenticatedAccount)
-            : SecretStore.writeInteractive(text, account: CredentialVault.legacyAccount)
-    }
-
     /// Once the user has explicitly unlocked the vault, subsequent saves in the
     /// same app session must not summon another Keychain authorization sheet.
-    static func saveAfterUnlock(_ vault: CredentialVault, systemAuthenticated: Bool) -> SecretStore.WriteResult {
+    static func saveAfterUnlock(_ vault: CredentialVault) -> SecretStore.WriteResult {
         guard let data = try? JSONEncoder().encode(vault),
               let text = String(data: data, encoding: .utf8) else { return .failed(errSecParam) }
-        // A protected item must retain macOS user-presence semantics. Saving
-        // after it was unlocked is still an explicit user action in Settings.
-        // Do not delete or inspect v1 here: a legacy Login Keychain ACL can
-        // summon its password sheet even for a delete. Touch ID mode must be
-        // completely isolated from the legacy item.
-        if systemAuthenticated {
-            return SecretStore.writeSystemAuthenticated(text, account: CredentialVault.systemAuthenticatedAccount)
-        }
-        return SecretStore.write(text, account: CredentialVault.legacyAccount)
+        return SecretStore.writeSystemAuthenticated(text, account: CredentialVault.systemAuthenticatedAccount)
     }
 
     static func remove() -> SecretStore.WriteResult {
-        let v3 = SecretStore.removeInteractive(CredentialVault.systemAuthenticatedAccount)
-        guard v3 == .removed else { return v3 }
-        return SecretStore.removeInteractive(CredentialVault.legacyAccount)
+        SecretStore.remove(CredentialVault.systemAuthenticatedAccount)
     }
 }

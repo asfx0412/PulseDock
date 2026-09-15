@@ -981,18 +981,12 @@ private struct ExpandedPanel: View {
                                 .buttonStyle(.borderedProminent).controlSize(.mini).disabled(store.isUnlockingCredentialVault)
                         }
                         Menu {
-                            Button("尝试导入可静默读取的旧凭据") { store.importReadableLegacyCredentials() }
                             Button("打开钥匙串访问") { store.openKeychainAccess() }
                             Button("清除 PulseDock 保险库", role: .destructive) { store.clearCredentialVault() }
                         } label: { Image(systemName: "ellipsis.circle") }.menuStyle(.borderlessButton).fixedSize()
                     }
                     Text(store.credentialVaultStatus).font(.system(size: 8.5)).foregroundStyle(.secondary)
-                    Picker("首次解锁方式", selection: $store.useSystemVaultAuthentication) {
-                        Text("Touch ID 新保险库（不读取旧登录钥匙串）").tag(true)
-                        Text("仅登录钥匙串密码").tag(false)
-                    }
-                    .pickerStyle(.menu).controlSize(.mini).disabled(store.credentialVaultUnlocked)
-                    Text("请在首次点击“解锁凭据”前选择。Touch ID 模式不会读取、迁移或删除旧登录钥匙串，因此不会出现旧钥匙串的密码框；首次成功后请重新填写并保存所需凭据。PulseDock 不读取生物信息。")
+                    Text("仅使用 Touch ID 解锁 v4 保险库；不会读取、迁移或删除旧登录钥匙串，因此不会出现旧钥匙串的密码框。首次成功后请重新填写并保存所需凭据。PulseDock 不读取生物信息。")
                         .font(.system(size: 8)).foregroundStyle(.tertiary)
                 }
             }
