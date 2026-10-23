@@ -93,6 +93,44 @@ final class CommunityResetAlertLedger {
 
     func hasObservedEligibleSchedule(_ recordID: String) -> Bool { entries[recordID]?.wasEligibleSchedule == true }
 
+    /// A completion record can be regenerated with a new upstream ID at every
+    /// poll. The originating schedule is the stable identity for delivery.
+    /// Old confirmations are informational history, not actionable alerts.
+    func completionDeliveryRecordID(for record: CodexCommunityResetRecord, now: Date) -> String? {
+        guard record.isCompletion, let completedAt = record.effectiveAt ?? record.announcedAt else { return nil }
+        let age = now.timeIntervalSince(completedAt)
+        guard age >= 0, age <= 7_200 else { return nil }
+        let related = record.relatedRecordIDs + [record.completionRecordID].compactMap { $0 }
+        if let scheduleID = related.filter(hasObservedEligibleSchedule).sorted().first { return scheduleID }
+        if record.kind == "reset_scheduled", hasObservedEligibleSchedule(record.id) { return record.id }
+        return nil
+    }
+
+    /// Carry over the old ID-based delivery state when upgrading an existing
+    /// installation. This prevents one last duplicate after the fix ships.
+    func inheritCompletionDelivery(recordID: String, completedAt: Date) {
+        guard var entry = entries[recordID] else { return }
+        let matching = entries.values.filter { $0.effectiveAt == completedAt }
+        var changed = false
+        for channel in [Channel.local, .feishu] {
+            let key = deliveryKey(.completed, channel)
+            if entry.deliveries[key] == nil,
+               let date = matching.compactMap({ $0.deliveries[key] }).min() {
+                entry.deliveries[key] = date
+                changed = true
+            }
+            if entry.claims[key] == nil,
+               let date = matching.compactMap({ $0.claims[key] }).min() {
+                entry.claims[key] = date
+                changed = true
+            }
+        }
+        if changed {
+            entries[recordID] = entry
+            save()
+        }
+    }
+
     func wasDelivered(recordID: String, stage: Stage, channel: Channel) -> Bool {
         entries[recordID]?.deliveries[deliveryKey(stage, channel)] != nil
     }

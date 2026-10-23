@@ -44,6 +44,29 @@ struct Version616CommunityResetSelfTest {
         require(!ledger.claim(recordID: record.id, stage: .firstSeen, channel: .feishu, at: now), "in-flight Feishu claim prevents duplicate send")
         let reloaded = CommunityResetAlertLedger(defaults: defaults)
         require(reloaded.hasClaim(recordID: record.id, stage: .firstSeen, channel: .feishu), "claim persists across polling/reload")
+
+        let completedAt = now.addingTimeInterval(-1_200)
+        func completion(_ id: String) -> CodexCommunityResetRecord {
+            CodexCommunityResetRecord(
+                id: id, kind: "reset_completed", announcedAt: nil, effectiveAt: completedAt,
+                confidence: nil, scope: nil, sourceURL: nil, schedulePrecision: nil,
+                scheduleBasis: nil, scheduleState: nil, completionRecordID: nil,
+                relatedRecordIDs: [record.id]
+            )
+        }
+        let oldCompletion = completion("manual:old-id")
+        _ = reloaded.observe(oldCompletion, now: now, eligibleSchedule: false)
+        reloaded.markDelivered(recordID: oldCompletion.id, stage: .completed, channel: .feishu, at: now)
+        let regenerated = completion("manual:new-id")
+        _ = reloaded.observe(regenerated, now: now, eligibleSchedule: false)
+        let stableID = reloaded.completionDeliveryRecordID(for: regenerated, now: now)
+        require(stableID == record.id, "regenerated completion uses its original schedule as delivery identity")
+        reloaded.inheritCompletionDelivery(recordID: stableID!, completedAt: completedAt)
+        require(reloaded.wasDelivered(recordID: stableID!, stage: .completed, channel: .feishu), "old ID-based Feishu delivery is inherited")
+        require(!reloaded.claim(recordID: stableID!, stage: .completed, channel: .feishu, at: now), "regenerated completion cannot send again")
+        let afterRestart = CommunityResetAlertLedger(defaults: defaults)
+        require(afterRestart.wasDelivered(recordID: stableID!, stage: .completed, channel: .feishu), "stable completion deduplication survives restart")
+        require(afterRestart.completionDeliveryRecordID(for: regenerated, now: now.addingTimeInterval(7_201)) == nil, "old completion cannot generate a delayed alert")
         reloaded.reset()
         require(defaults.data(forKey: "PulseDock.communityResetAlertLedger.v1") == nil, "reset uses injected defaults suite")
         print("PulseDock 6.16 community reset self-test passed")

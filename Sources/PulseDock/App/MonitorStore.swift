@@ -557,6 +557,9 @@ final class MonitorStore: ObservableObject {
         var wasKnown: [String: Bool] = [:]
         var changed: [String: Bool] = [:]
         for record in records {
+            // Completion-only IDs may be regenerated on every upstream poll.
+            // Their delivery is tracked on the originating schedule instead.
+            if record.kind == "reset_completed" { continue }
             let eligible = eligibility[record.id] ?? false
             wasKnown[record.id] = communityResetAlertLedger.hasObserved(record.id)
             changed[record.id] = communityResetAlertLedger.hasMeaningfulChange(record, minimumConfidence: minimumConfidence)
@@ -579,12 +582,11 @@ final class MonitorStore: ObservableObject {
             }
 
             guard communityResetCompletionAlertEnabled, record.isCompletion else { continue }
-            let related = record.relatedRecordIDs + [record.completionRecordID].compactMap { $0 }
-            // A completion first seen after app launch is history, not an
-            // opportunity to prepare. Only confirm a schedule we saw earlier.
-            guard related.contains(where: { communityResetAlertLedger.hasObservedEligibleSchedule($0) }) ||
-                    (record.kind == "reset_scheduled" && communityResetAlertLedger.hasObservedEligibleSchedule(record.id)) else { continue }
-            deliverCommunityReset(record, stage: .completed, now: now)
+            guard let deliveryID = communityResetAlertLedger.completionDeliveryRecordID(for: record, now: now) else { continue }
+            if let completedAt = record.effectiveAt ?? record.announcedAt {
+                communityResetAlertLedger.inheritCompletionDelivery(recordID: deliveryID, completedAt: completedAt)
+            }
+            deliverCommunityReset(record, stage: .completed, now: now, deliveryRecordID: deliveryID)
         }
         let current = records.filter(\.isPendingSchedule).sorted {
             ($0.effectiveAt ?? .distantFuture) < ($1.effectiveAt ?? .distantFuture)
@@ -604,7 +606,8 @@ final class MonitorStore: ObservableObject {
         return true
     }
 
-    private func deliverCommunityReset(_ record: CodexCommunityResetRecord, stage: CommunityResetAlertLedger.Stage, now: Date) {
+    private func deliverCommunityReset(_ record: CodexCommunityResetRecord, stage: CommunityResetAlertLedger.Stage, now: Date, deliveryRecordID: String? = nil) {
+        let recordID = deliveryRecordID ?? record.id
         let localEnabled = communityResetLocalNotificationsEnabled
         let feishuEnabled = feishuAlertsEnabled && hasVerifiedFeishuCredential
         guard localEnabled || feishuEnabled else {
@@ -630,14 +633,14 @@ final class MonitorStore: ObservableObject {
             title = "额度重置已由第三方确认"
             body = "第三方社区源已记录完成信号。该信息不代表 OpenAI 官方承诺，也不会验证你的个人额度。"
         }
-        if localEnabled, !communityResetAlertLedger.wasDelivered(recordID: record.id, stage: stage, channel: .local) {
+        if localEnabled, !communityResetAlertLedger.wasDelivered(recordID: recordID, stage: stage, channel: .local) {
             PulseDockNotifications.send(title: title, body: body)
-            communityResetAlertLedger.markDelivered(recordID: record.id, stage: stage, channel: .local, at: now)
+            communityResetAlertLedger.markDelivered(recordID: recordID, stage: stage, channel: .local, at: now)
             communityResetLastDeliveryStatus = "本地通知已派发"
         }
-        guard feishuEnabled, !communityResetAlertLedger.wasDelivered(recordID: record.id, stage: stage, channel: .feishu) else { return }
-        guard communityResetAlertLedger.claim(recordID: record.id, stage: stage, channel: .feishu, at: now) else {
-            if communityResetAlertLedger.hasClaim(recordID: record.id, stage: stage, channel: .feishu) {
+        guard feishuEnabled, !communityResetAlertLedger.wasDelivered(recordID: recordID, stage: stage, channel: .feishu) else { return }
+        guard communityResetAlertLedger.claim(recordID: recordID, stage: stage, channel: .feishu, at: now) else {
+            if communityResetAlertLedger.hasClaim(recordID: recordID, stage: stage, channel: .feishu) {
                 communityResetLastDeliveryStatus = "飞书派发结果未确认，已保留去重以避免重复发送"
             }
             return
@@ -646,10 +649,10 @@ final class MonitorStore: ObservableObject {
             guard let self else { return }
             let result = await self.feishuAlertService.send(webhook: self.feishuWebhook, signingSecret: self.feishuSigningSecret, title: title, body: body)
             if result.success {
-                self.communityResetAlertLedger.markDelivered(recordID: record.id, stage: stage, channel: .feishu)
+                self.communityResetAlertLedger.markDelivered(recordID: recordID, stage: stage, channel: .feishu)
                 self.communityResetLastDeliveryStatus = "飞书提醒已派发"
             } else if result.outcome == .retryableFailure {
-                self.communityResetAlertLedger.releaseForRetry(recordID: record.id, stage: stage, channel: .feishu)
+                self.communityResetAlertLedger.releaseForRetry(recordID: recordID, stage: stage, channel: .feishu)
                 self.communityResetLastDeliveryStatus = "飞书发送失败：\(result.evidence)；将按 5/15/30 分钟有限退避重试"
             } else {
                 // The durable reservation remains after a failure or timeout:
