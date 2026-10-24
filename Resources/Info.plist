@@ -12,8 +12,8 @@
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>PulseDock</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>6.16.4</string>
-    <key>CFBundleVersion</key><string>6164</string>
+    <key>CFBundleShortVersionString</key><string>6.16.5</string>
+    <key>CFBundleVersion</key><string>6165</string>
     <key>LSMinimumSystemVersion</key><string>26.0</string>
     <key>LSUIElement</key><true/>
     <key>LSMultipleInstancesProhibited</key><true/>
