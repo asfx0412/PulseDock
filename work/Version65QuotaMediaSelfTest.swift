@@ -10,6 +10,24 @@ enum Version65QuotaMediaSelfTest {
     }
 
     static func main() {
+        let resources = "/test/Applications/ChatGPT.app/Contents/Resources"
+        let bundled = resources + "/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+        let bundledScript = resources + "/codex-cli/bin/codex"
+        let legacy = resources + "/codex"
+        let pathBinary = "/test/bin/codex"
+        func locate(_ available: Set<String>) -> String? {
+            CodexExecutableLocator.find(
+                applicationRoots: ["/test/Applications"],
+                searchPath: "/test/bin",
+                isExecutable: { available.contains($0) }
+            )
+        }
+        require(locate([bundled, bundledScript, legacy, pathBinary]) == bundled, "current ChatGPT bundle must take priority")
+        require(locate([bundledScript, legacy, pathBinary]) == bundledScript, "bundled launcher must be a fallback")
+        require(locate([legacy, pathBinary]) == legacy, "legacy bundle path must remain supported")
+        require(locate([pathBinary]) == pathBinary, "PATH lookup must remain supported")
+        require(locate([]) == nil, "missing Codex executable must remain unavailable")
+
         let rateJSON = Data(#"{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":41,"windowDurationMins":300,"resetsAt":1787400000},"secondary":{"usedPercent":12,"windowDurationMins":10080,"resetsAt":1787900000}},"rateLimitResetCredits":{"availableCount":2,"credits":[]}}}"#.utf8)
         let usageJSON = Data(#"{"id":3,"result":{"summary":{"lifetimeTokens":1234567,"peakDailyTokens":90000,"currentStreakDays":3},"dailyUsageBuckets":[{"startDate":"2026-08-22","tokens":1200},{"startDate":"2026-08-23","tokens":2400}]}}"#.utf8)
         let quota = CodexQuotaService.decode(rateJSON, usageData: usageJSON)

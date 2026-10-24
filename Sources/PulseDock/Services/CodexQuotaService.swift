@@ -60,6 +60,31 @@ final class QuotaOutputCollector: @unchecked Sendable {
     }
 }
 
+enum CodexExecutableLocator {
+    static func find(
+        applicationRoots: [String],
+        searchPath: String,
+        isExecutable: (String) -> Bool
+    ) -> String? {
+        for root in applicationRoots {
+            for app in ["ChatGPT.app", "Codex.app"] {
+                let resources = root + "/" + app + "/Contents/Resources"
+                let candidates = [
+                    resources + "/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+                    resources + "/codex-cli/bin/codex",
+                    resources + "/codex"
+                ]
+                if let executable = candidates.first(where: isExecutable) { return executable }
+            }
+        }
+        for folder in searchPath.split(separator: ":") {
+            let candidate = String(folder) + "/codex"
+            if isExecutable(candidate) { return candidate }
+        }
+        return nil
+    }
+}
+
 actor CodexQuotaService {
     private var inFlight: Task<QuotaSnapshot, Never>?
 
@@ -299,16 +324,13 @@ actor CodexQuotaService {
     }
 
     private nonisolated static func findCodexExecutable() -> String? {
-        let fixed = [
-            "/Applications/ChatGPT.app/Contents/Resources/codex",
-            "/Applications/Codex.app/Contents/Resources/codex"
-        ]
-        for path in fixed where FileManager.default.isExecutableFile(atPath: path) { return path }
-        for folder in ProcessInfo.processInfo.environment["PATH", default: ""].split(separator: ":") {
-            let path = String(folder) + "/codex"
-            if FileManager.default.isExecutableFile(atPath: path) { return path }
-        }
-        return nil
+        let userApplications = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Applications").path
+        return CodexExecutableLocator.find(
+            applicationRoots: ["/Applications", userApplications],
+            searchPath: ProcessInfo.processInfo.environment["PATH", default: ""],
+            isExecutable: { FileManager.default.isExecutableFile(atPath: $0) }
+        )
     }
 
     private nonisolated static func unavailable(_ message: String) -> QuotaSnapshot {
