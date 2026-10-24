@@ -122,6 +122,12 @@ final class MainThreadResponsivenessMonitor: @unchecked Sendable {
         return accumulator.snapshot
     }
 
+    var hasPendingPing: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return pingPending
+    }
+
     private func enqueuePing(generation requestedGeneration: UInt64) {
         lock.lock()
         guard timer != nil, generation == requestedGeneration, !pingPending else {

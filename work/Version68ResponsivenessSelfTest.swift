@@ -31,6 +31,11 @@ enum Version68ResponsivenessSelfTest {
         RunLoop.main.run(until: Date().addingTimeInterval(0.18))
         let baseline = monitor.snapshot()
         require(baseline.sampleCount > 0, "实际主线程 ping 应产生样本")
+        let pendingDeadline = Date().addingTimeInterval(2)
+        while !monitor.hasPendingPing && Date() < pendingDeadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        require(monitor.hasPendingPing, "测试前必须确认主线程 ping 已排队")
         Thread.sleep(forTimeInterval: 0.20) // intentionally simulate a blocked UI executor
         RunLoop.main.run(until: Date().addingTimeInterval(0.08))
         let live = monitor.snapshot()
